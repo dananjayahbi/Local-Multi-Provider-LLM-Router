@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ─── Provider ───────────────────────────────────────────
+model Provider {
+  id        String   @id @default(cuid())
+  name      String
+  baseUrl   String
+  apiFormat String   // CHAT_COMPLETIONS, MESSAGES, RESPONSES
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  apiKeys        ApiKey[]
+  providerModels ProviderModel[]
+}
+
+// ─── API Key ────────────────────────────────────────────
+model ApiKey {
+  id                String    @id @default(cuid())
+  providerId        String
+  label             String
+  secretEncrypted   String
+  status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED
+  manuallyDisabled  Boolean   @default(false)
+  penaltyLevel      Int       @default(0)
+  penaltyExpiresAt  DateTime?
+  lastPenaltyEndedAt DateTime?
+  suspendedReason   String?
+  consecutiveFailures Int     @default(0)
+  lastUsedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  provider    Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  requestLogs RequestLog[]
+}
+
+// ─── Provider Model ─────────────────────────────────────
+model ProviderModel {
+  id                     String   @id @default(cuid())
+  providerId             String
+  modelId                String
+  displayName            String
+  supportsVision         Boolean   @default(false)
+  supportsFunctionCalling Boolean  @default(false)
+  contextWindow          Int?
+  enabled                Boolean   @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  provider    Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  poolMembers PoolMember[]
+  requestLogs RequestLog[]
+}
+
+// ─── Pool ───────────────────────────────────────────────
+model Pool {
+  id                String   @id @default(cuid())
+  name              String
+  virtualModelName  String   @unique
+  description       String?
+  routingStrategy   String   @default("ROUND_ROBIN") // ROUND_ROBIN, PRIORITY
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  poolMembers PoolMember[]
+  requestLogs RequestLog[]
+}
+
+// ─── Pool Member ────────────────────────────────────────
+model PoolMember {
+  id              String @id @default(cuid())
+  poolId          String
+  providerModelId String
+  priority        Int    @default(0)
+
+  pool          Pool          @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  providerModel ProviderModel @relation(fields: [providerModelId], references: [id], onDelete: Cascade)
+}
+
+// ─── Request Log ────────────────────────────────────────
+model RequestLog {
+  id                     String   @id @default(cuid())
+  poolId                 String?
+  apiKeyId               String?
+  providerModelId        String?
+  tier                   String?  // TIER_1, TIER_2
+  outcome                String   // SUCCESS, FAILURE
+  errorClassification    String?  // QUOTA_EXCEEDED, RATE_LIMITED, SERVER_ERROR, NETWORK_ERROR, AUTH_ERROR, INVALID_REQUEST, UNKNOWN
+  httpStatus             Int?
+  latencyMs              Int
+  promptTokens           Int?
+  completionTokens       Int?
+  requestedVirtualModel  String
+  createdAt              DateTime @default(now())
+
+  pool          Pool?          @relation(fields: [poolId], references: [id], onDelete: SetNull)
+  apiKey        ApiKey?        @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  providerModel ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: SetNull)
+}
+
+// ─── App Settings (singleton) ───────────────────────────
+model AppSettings {
+  id                        String @id @default("singleton")
+  unifiedGatewayKeyHash     String
+  unifiedGatewayKeyPrefix   String
+  penaltyBaseCooldownSeconds   Int @default(600)
+  penaltyMultiplier           Float @default(3)
+  penaltyMaxCooldownSeconds    Int @default(21600)
+  penaltyResetWindowSeconds    Int @default(3600)
+}
