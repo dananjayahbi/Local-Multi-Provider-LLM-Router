@@ -142,6 +142,7 @@ export default function LogsPage() {
                 <TableHead>Time</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Key / Provider</TableHead>
+                <TableHead>Pool</TableHead>
                 <TableHead>Outcome</TableHead>
                 <TableHead>Latency</TableHead>
                 <TableHead>Tier</TableHead>
@@ -161,6 +162,9 @@ export default function LogsPage() {
                     <TableCell className="text-xs">
                       {log.apiKey?.label || "?"} @ {log.apiKey?.provider?.name || "?"}
                     </TableCell>
+                    <TableCell className="text-xs">
+                      {log.pool?.name || "Direct"}
+                    </TableCell>
                     <TableCell>
                       <OutcomeBadge outcome={log.outcome} classification={log.errorClassification} />
                     </TableCell>
@@ -171,7 +175,7 @@ export default function LogsPage() {
                   </TableRow>
                   {expandedRows.has(log.id) && (
                     <TableRow key={`${log.id}-expand`}>
-                      <TableCell colSpan={7} className="bg-muted/30">
+                      <TableCell colSpan={8} className="bg-muted/30">
                         <div className="grid grid-cols-3 gap-2 text-xs py-2 px-4">
                           <div>
                             <span className="text-muted-foreground">HTTP Status:</span>{" "}

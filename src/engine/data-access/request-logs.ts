@@ -123,3 +123,62 @@ export async function getDashboardStats() {
     recentFailures: recentLogs,
   };
 }
+
+// ─── Usage Stats ────────────────────────────────────────
+
+export interface UsageFilters {
+  dateFrom?: Date;
+  dateTo?: Date;
+  providerId?: string;
+  poolId?: string;
+  apiKeyId?: string;
+}
+
+export interface UsageStats {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  requestCount: number;
+  successCount: number;
+  failureCount: number;
+}
+
+export async function getUsageStats(filters: UsageFilters = {}): Promise<UsageStats> {
+  const where: Record<string, unknown> = {};
+
+  if (filters.dateFrom || filters.dateTo) {
+    const createdAt: Record<string, Date> = {};
+    if (filters.dateFrom) createdAt.gte = filters.dateFrom;
+    if (filters.dateTo) createdAt.lte = filters.dateTo;
+    where.createdAt = createdAt;
+  }
+
+  if (filters.poolId) where.poolId = filters.poolId;
+  if (filters.apiKeyId) where.apiKeyId = filters.apiKeyId;
+
+  if (filters.providerId) {
+    where.apiKey = { providerId: filters.providerId };
+  }
+
+  const [aggregation, requestCount, successCount, failureCount] = await Promise.all([
+    prisma.requestLog.aggregate({
+      where,
+      _sum: {
+        promptTokens: true,
+        completionTokens: true,
+      },
+    }),
+    prisma.requestLog.count({ where }),
+    prisma.requestLog.count({ where: { ...where, outcome: "SUCCESS" } }),
+    prisma.requestLog.count({ where: { ...where, outcome: "FAILURE" } }),
+  ]);
+
+  return {
+    promptTokens: aggregation._sum.promptTokens ?? 0,
+    completionTokens: aggregation._sum.completionTokens ?? 0,
+    totalTokens: (aggregation._sum.promptTokens ?? 0) + (aggregation._sum.completionTokens ?? 0),
+    requestCount,
+    successCount,
+    failureCount,
+  };
+}

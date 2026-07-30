@@ -10,12 +10,14 @@ import {
   ScrollText,
   Settings,
   Zap,
+  BarChart3,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/providers", label: "Providers", icon: Server },
   { href: "/pools", label: "Pools", icon: Layers },
+  { href: "/usage", label: "Usage", icon: BarChart3 },
   { href: "/logs", label: "Logs", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

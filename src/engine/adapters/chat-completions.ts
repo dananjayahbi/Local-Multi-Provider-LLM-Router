@@ -42,6 +42,7 @@ export const chatCompletionsAdapter: ProviderAdapter = {
     if (canonical.tools) body.tools = canonical.tools;
     if (canonical.tool_choice) body.tool_choice = canonical.tool_choice;
     if (canonical.stop) body.stop = canonical.stop;
+    if (canonical.stream) body.stream_options = { include_usage: true };
 
     return {
       url,
