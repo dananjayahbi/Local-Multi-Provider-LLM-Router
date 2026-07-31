@@ -3,14 +3,16 @@
 // OpenAI chat-completions shape for the client.
 
 import { CanonicalResponse, CanonicalDelta } from "./canonical";
+import { normalizeCanonicalResponse } from "./response-normalizer";
 
 export function serializeResponse(canonical: CanonicalResponse): object {
+  const normalized = normalizeCanonicalResponse(canonical);
   return {
-    id: canonical.id,
+    id: normalized.id,
     object: "chat.completion",
-    created: canonical.created,
-    model: canonical.model,
-    choices: canonical.choices.map((choice) => ({
+    created: normalized.created,
+    model: normalized.model,
+    choices: normalized.choices.map((choice) => ({
       index: choice.index,
       message: {
         role: choice.message.role,

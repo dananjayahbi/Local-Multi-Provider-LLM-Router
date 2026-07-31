@@ -18,6 +18,13 @@ import {
   checkAndRecoverExpiredPenalties,
 } from "./health-engine";
 import { createRequestLog } from "./data-access/request-logs";
+import {
+  waitForApiKeyRateLimit,
+  settleApiKeyRateLimit,
+  ApiKeyRateLimitReservation,
+} from "./rate-limit/api-key-rate-limiter";
+import { estimateTokensForRateLimit } from "./rate-limit/token-estimator";
+import { normalizeCanonicalResponse } from "./response-normalizer";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -29,6 +36,8 @@ interface CandidateKey {
   penaltyLevel: number;
   penaltyExpiresAt: Date | null;
   lastUsedAt: Date | null;
+  rpmLimit: number | null;
+  tpmLimit: number | null;
 }
 
 interface CandidateMember {
@@ -146,6 +155,28 @@ export async function orchestrate(
     const startTime = Date.now();
 
     try {
+      // Rate-limit queue: wait until this key has RPM/TPM capacity
+      const estimatedTokens = estimateTokensForRateLimit(canonicalRequest);
+      let reservation: ApiKeyRateLimitReservation = {
+        apiKeyId: key.apiKeyId,
+        reservationId: "",
+        reservedTokens: estimatedTokens,
+        hasTpmLimit: false,
+      };
+
+      const hasLimits = Boolean(
+        (key.rpmLimit && key.rpmLimit > 0) || (key.tpmLimit && key.tpmLimit > 0)
+      );
+
+      if (hasLimits) {
+        reservation = await waitForApiKeyRateLimit({
+          apiKeyId: key.apiKeyId,
+          rpmLimit: key.rpmLimit,
+          tpmLimit: key.tpmLimit,
+          requestedTokens: estimatedTokens,
+        });
+      }
+
       // Decrypt the key
       const decryptedKey = decrypt(key.secretEncrypted);
 
@@ -228,12 +259,17 @@ export async function orchestrate(
           virtualModel: canonicalRequest.model,
           startTime,
           httpStatus: response.status,
+          reservation,
         });
 
         return { success: true, streamGenerator: streamGen, errors };
       } else {
         const responseBody = await response.text();
-        const canonicalResponse = adapter.parseResponse(responseBody, response.status);
+        let canonicalResponse = adapter.parseResponse(responseBody, response.status);
+        canonicalResponse = normalizeCanonicalResponse(canonicalResponse);
+
+        // Settle tpm reservation with actual usage
+        await settleApiKeyRateLimit(reservation, canonicalResponse.usage?.total_tokens ?? null);
 
         // Log success
         await createRequestLog({
@@ -317,6 +353,7 @@ async function* streamResponse(
     virtualModel: string;
     startTime: number;
     httpStatus: number;
+    reservation: ApiKeyRateLimitReservation;
   }
 ): AsyncGenerator<CanonicalDelta> {
   const reader = response.body?.getReader();
@@ -362,6 +399,14 @@ async function* streamResponse(
     }
   } finally {
     reader.releaseLock();
+
+    // Settle tpm reservation with actual usage from stream
+    const actualTotal =
+      streamUsage.promptTokens && streamUsage.completionTokens
+        ? streamUsage.promptTokens + streamUsage.completionTokens
+        : null;
+    await settleApiKeyRateLimit(meta.reservation, actualTotal);
+
     // Log success after stream completes
     await createRequestLog({
       poolId: meta.poolId,

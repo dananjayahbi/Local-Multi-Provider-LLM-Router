@@ -16,7 +16,7 @@ export async function getKeyById(id: string) {
 
 export async function createApiKey(
   providerId: string,
-  data: { label: string; secret: string }
+  data: { label: string; secret: string; rpmLimit: number | null; tpmLimit: number | null }
 ) {
   const secretEncrypted = encrypt(data.secret);
   return prisma.apiKey.create({
@@ -24,19 +24,23 @@ export async function createApiKey(
       providerId,
       label: data.label,
       secretEncrypted,
+      rpmLimit: data.rpmLimit,
+      tpmLimit: data.tpmLimit,
     },
   });
 }
 
 export async function updateApiKey(
   id: string,
-  data: { label?: string; secret?: string }
+  data: { label?: string; secret?: string; rpmLimit?: number | null; tpmLimit?: number | null }
 ) {
   const updateData: Record<string, unknown> = {};
   if (data.label !== undefined) updateData.label = data.label;
   if (data.secret !== undefined) {
     updateData.secretEncrypted = encrypt(data.secret);
   }
+  if (data.rpmLimit !== undefined) updateData.rpmLimit = data.rpmLimit;
+  if (data.tpmLimit !== undefined) updateData.tpmLimit = data.tpmLimit;
   return prisma.apiKey.update({ where: { id }, data: updateData });
 }
 

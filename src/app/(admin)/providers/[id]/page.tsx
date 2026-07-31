@@ -28,6 +28,8 @@ import {
   Box,
   Pencil,
   RefreshCw,
+  Gauge,
+  RotateCcw,
 } from "lucide-react";
 
 interface ApiKeyItem {
@@ -41,6 +43,8 @@ interface ApiKeyItem {
   manuallyDisabled: boolean;
   consecutiveFailures: number;
   lastUsedAt: string | null;
+  rpmLimit: number | null;
+  tpmLimit: number | null;
 }
 
 interface ProviderModelItem {
@@ -108,7 +112,7 @@ export default function ProviderDetailPage() {
   const [editKeyDialogOpen, setEditKeyDialogOpen] = useState(false);
   const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null);
 
-  const [keyForm, setKeyForm] = useState({ label: "", secret: "" });
+  const [keyForm, setKeyForm] = useState({ label: "", secret: "", rpmLimit: "", tpmLimit: "" });
   const [modelForm, setModelForm] = useState({
     modelId: "",
     displayName: "",
@@ -116,7 +120,7 @@ export default function ProviderDetailPage() {
     supportsFunctionCalling: false,
     contextWindow: 0,
   });
-  const [editKeyForm, setEditKeyForm] = useState({ label: "", secret: "" });
+  const [editKeyForm, setEditKeyForm] = useState({ label: "", secret: "", rpmLimit: "", tpmLimit: "" });
 
   const loadData = useCallback(async () => {
     const res = await fetch(`/api/admin/providers/${id}`);
@@ -143,14 +147,21 @@ export default function ProviderDetailPage() {
   }, [loadData]);
 
   const handleAddKey = async () => {
+    const rpmVal = keyForm.rpmLimit.trim() === "" ? null : parseInt(keyForm.rpmLimit, 10);
+    const tpmVal = keyForm.tpmLimit.trim() === "" ? null : parseInt(keyForm.tpmLimit, 10);
     const res = await fetch(`/api/admin/providers/${id}/keys`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(keyForm),
+      body: JSON.stringify({
+        label: keyForm.label,
+        secret: keyForm.secret,
+        rpmLimit: rpmVal,
+        tpmLimit: tpmVal,
+      }),
     });
     if (res.ok) {
       setKeyDialogOpen(false);
-      setKeyForm({ label: "", secret: "" });
+      setKeyForm({ label: "", secret: "", rpmLimit: "", tpmLimit: "" });
       loadData();
     }
   };
@@ -185,12 +196,16 @@ export default function ProviderDetailPage() {
 
   const handleEditKey = async () => {
     if (!editingKey) return;
+    const rpmVal = editKeyForm.rpmLimit.trim() === "" ? null : parseInt(editKeyForm.rpmLimit, 10);
+    const tpmVal = editKeyForm.tpmLimit.trim() === "" ? null : parseInt(editKeyForm.tpmLimit, 10);
     const res = await fetch(`/api/admin/keys/${editingKey.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         label: editKeyForm.label || undefined,
         secret: editKeyForm.secret || undefined,
+        rpmLimit: rpmVal,
+        tpmLimit: tpmVal,
       }),
     });
     if (res.ok) {
@@ -253,6 +268,28 @@ export default function ProviderDetailPage() {
                   <Label>API Key Secret</Label>
                   <Input value={keyForm.secret} onChange={(e) => setKeyForm({ ...keyForm, secret: e.target.value })} placeholder="sk-..." type="password" />
                 </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>RPM Limit <span className="text-muted-foreground text-xs font-normal">(requests/min)</span></Label>
+                    <Input
+                      value={keyForm.rpmLimit}
+                      onChange={(e) => setKeyForm({ ...keyForm, rpmLimit: e.target.value })}
+                      placeholder="Unlimited"
+                      type="number"
+                      min="1"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>TPM Limit <span className="text-muted-foreground text-xs font-normal">(tokens/min)</span></Label>
+                    <Input
+                      value={keyForm.tpmLimit}
+                      onChange={(e) => setKeyForm({ ...keyForm, tpmLimit: e.target.value })}
+                      placeholder="Unlimited"
+                      type="number"
+                      min="1"
+                    />
+                  </div>
+                </div>
                 <Button onClick={handleAddKey} className="w-full">Add Key</Button>
               </div>
             </DialogContent>
@@ -275,12 +312,25 @@ export default function ProviderDetailPage() {
                       {revealedKeys.has(k.id) && (
                         <span className="font-mono text-xs bg-muted px-1 rounded">(encrypted in DB)</span>
                       )}
+                      {(k.rpmLimit || k.tpmLimit) && (
+                        <span className="flex items-center gap-1 ml-1">
+                          <Gauge className="h-3 w-3" />
+                          {k.rpmLimit ? `${k.rpmLimit} RPM` : ""}
+                          {k.rpmLimit && k.tpmLimit ? " · " : ""}
+                          {k.tpmLimit ? `${k.tpmLimit} TPM` : ""}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
                     {k.status === "SUSPENDED" && (
                       <Button size="sm" variant="outline" onClick={() => handleKeyAction(k.id, "reactivate")}>
                         <RefreshCw className="mr-1 h-3 w-3" /> Reactivate
+                      </Button>
+                    )}
+                    {(k.status === "PENALIZED" || k.status === "SUSPENDED") && (
+                      <Button size="sm" variant="outline" onClick={() => handleKeyAction(k.id, "reset-penalty")}>
+                        <RotateCcw className="mr-1 h-3 w-3" /> Reset
                       </Button>
                     )}
                     {k.status !== "DISABLED" ? (
@@ -294,7 +344,12 @@ export default function ProviderDetailPage() {
                     )}
                     <Button size="sm" variant="ghost" onClick={() => {
                       setEditingKey(k);
-                      setEditKeyForm({ label: k.label, secret: "" });
+                      setEditKeyForm({
+                        label: k.label,
+                        secret: "",
+                        rpmLimit: k.rpmLimit != null ? String(k.rpmLimit) : "",
+                        tpmLimit: k.tpmLimit != null ? String(k.tpmLimit) : "",
+                      });
                       setEditKeyDialogOpen(true);
                     }}>
                       <Pencil className="h-3 w-3" />
@@ -387,6 +442,28 @@ export default function ProviderDetailPage() {
             <div className="space-y-2">
               <Label>New Secret (leave blank to keep current)</Label>
               <Input value={editKeyForm.secret} onChange={(e) => setEditKeyForm({ ...editKeyForm, secret: e.target.value })} placeholder="sk-..." type="password" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>RPM Limit <span className="text-muted-foreground text-xs font-normal">(requests/min)</span></Label>
+                <Input
+                  value={editKeyForm.rpmLimit}
+                  onChange={(e) => setEditKeyForm({ ...editKeyForm, rpmLimit: e.target.value })}
+                  placeholder="Unlimited"
+                  type="number"
+                  min="1"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>TPM Limit <span className="text-muted-foreground text-xs font-normal">(tokens/min)</span></Label>
+                <Input
+                  value={editKeyForm.tpmLimit}
+                  onChange={(e) => setEditKeyForm({ ...editKeyForm, tpmLimit: e.target.value })}
+                  placeholder="Unlimited"
+                  type="number"
+                  min="1"
+                />
+              </div>
             </div>
             <Button onClick={handleEditKey} className="w-full">Save Changes</Button>
           </div>

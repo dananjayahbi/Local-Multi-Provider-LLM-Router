@@ -2,10 +2,11 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Activity } from "lucide-react";
 import { DateRangeSelector, DateRangePreset } from "@/components/usage/date-range-selector";
 import { UsageFilterBar } from "@/components/usage/usage-filter-bar";
 import { UsageStatCards } from "@/components/usage/usage-stat-cards";
+import { RateLimitCharts } from "@/components/usage/rate-limit-charts";
 
 interface UsageStats {
   promptTokens: number;
@@ -38,6 +39,11 @@ export default function UsagePage() {
   }>({});
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Chart mode: track which pool or key is selected for live rate charts
+  const [chartMode, setChartMode] = useState<{ type: "pool" | "key"; poolId?: string; apiKeyId?: string }>({
+    type: "pool",
+  });
 
   // Keep latest params-building logic in a ref to avoid stale closures in the interval
   const paramsRef = useRef({ preset, dateRange, customFrom, customTo, filters });
@@ -126,7 +132,15 @@ export default function UsagePage() {
             setCustomTo(to);
           }}
         />
-        <UsageFilterBar onFiltersChange={setFilters} />
+        <UsageFilterBar onFiltersChange={(f) => {
+          setFilters(f);
+          // Sync chart mode
+          if (f.apiKeyId) {
+            setChartMode({ type: "key", apiKeyId: f.apiKeyId });
+          } else {
+            setChartMode({ type: "pool", poolId: f.poolId });
+          }
+        }} />
       </div>
 
       {loading ? (
@@ -140,6 +154,18 @@ export default function UsagePage() {
       ) : (
         <UsageStatCards stats={stats} />
       )}
+
+      {/* ─── Live Rate Limit Charts ─── */}
+      <div className="border-t pt-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-lg font-semibold">Live Rate Limiting</h2>
+          <span className="text-xs text-muted-foreground">
+            {chartMode.type === "key" ? "Single key" : chartMode.poolId ? "Pool keys" : "All active keys"}
+          </span>
+        </div>
+        <RateLimitCharts mode={chartMode} />
+      </div>
     </div>
   );
 }

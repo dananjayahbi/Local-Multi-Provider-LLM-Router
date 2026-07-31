@@ -26,6 +26,8 @@ model ApiKey {
   providerId        String
   label             String
   secretEncrypted   String
+  rpmLimit          Int?
+  tpmLimit          Int?
   status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED
   manuallyDisabled  Boolean   @default(false)
   penaltyLevel      Int       @default(0)

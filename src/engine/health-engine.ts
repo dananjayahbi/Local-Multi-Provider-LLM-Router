@@ -174,6 +174,20 @@ export async function enableKey(apiKeyId: string): Promise<void> {
   });
 }
 
+export async function resetPenalty(apiKeyId: string): Promise<void> {
+  await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: {
+      status: "ACTIVE",
+      penaltyLevel: 0,
+      penaltyExpiresAt: null,
+      lastPenaltyEndedAt: null,
+      consecutiveFailures: 0,
+      suspendedReason: null,
+    },
+  });
+}
+
 export async function resetKeyHealth(apiKeyId: string): Promise<void> {
   await prisma.apiKey.update({
     where: { id: apiKeyId },

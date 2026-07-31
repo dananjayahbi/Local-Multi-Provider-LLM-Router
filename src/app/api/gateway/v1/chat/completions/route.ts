@@ -13,34 +13,14 @@ import { classifyError } from "@/engine/error-classifier";
 import { applyFailure, resetKeyHealth } from "@/engine/health-engine";
 import { createRequestLog } from "@/engine/data-access/request-logs";
 import { decrypt } from "@/lib/encryption";
-
-// In-memory rate limiter
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT_WINDOW = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 120; // max requests per minute
-
-function checkRateLimit(): boolean {
-  const now = Date.now();
-  const key = "global";
-  const entry = rateLimitMap.get(key);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
-    return true;
-  }
-  if (entry.count >= RATE_LIMIT_MAX) return false;
-  entry.count++;
-  return true;
-}
+import { normalizeCanonicalResponse } from "@/engine/response-normalizer";
+import {
+  waitForApiKeyRateLimit,
+  settleApiKeyRateLimit,
+} from "@/engine/rate-limit/api-key-rate-limiter";
+import { estimateTokensForRateLimit } from "@/engine/rate-limit/token-estimator";
 
 export async function POST(request: NextRequest) {
-  // Rate limit check
-  if (!checkRateLimit()) {
-    return NextResponse.json(
-      { error: { message: "Too many requests. Please slow down.", type: "rate_limit" } },
-      { status: 429 }
-    );
-  }
-
   // Auth check
   const authHeader = request.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
@@ -94,6 +74,7 @@ export async function POST(request: NextRequest) {
                       id: true, label: true, secretEncrypted: true,
                       status: true, penaltyExpiresAt: true,
                       penaltyLevel: true, lastUsedAt: true,
+                      rpmLimit: true, tpmLimit: true,
                     },
                   },
                 },
@@ -142,6 +123,8 @@ export async function POST(request: NextRequest) {
           penaltyLevel: k.penaltyLevel,
           penaltyExpiresAt: k.penaltyExpiresAt,
           lastUsedAt: k.lastUsedAt,
+          rpmLimit: k.rpmLimit as number | null,
+          tpmLimit: k.tpmLimit as number | null,
         })),
       })),
     };
@@ -212,6 +195,14 @@ export async function POST(request: NextRequest) {
       include: {
         apiKeys: {
           where: { status: { notIn: ["DISABLED", "SUSPENDED"] } },
+          select: {
+            id: true,
+            label: true,
+            secretEncrypted: true,
+            status: true,
+            rpmLimit: true,
+            tpmLimit: true,
+          },
         },
         providerModels: {
           where: { modelId },
@@ -255,6 +246,15 @@ export async function POST(request: NextRequest) {
     };
 
     const adapter = getAdapter(provider.apiFormat);
+
+    // Per-key rate limit wait
+    const estimatedTokens = estimateTokensForRateLimit(canonicalRequest);
+    let reservation = await waitForApiKeyRateLimit({
+      apiKeyId: apiKey.id,
+      rpmLimit: apiKey.rpmLimit as number | null,
+      tpmLimit: apiKey.tpmLimit as number | null,
+      requestedTokens: estimatedTokens,
+    });
 
     try {
       const { url, headers, body } = adapter.buildRequest(
@@ -334,6 +334,7 @@ export async function POST(request: NextRequest) {
               });
               controller.enqueue(encoder.encode(`data: ${errorChunk}\n\n`));
             } finally {
+              settleApiKeyRateLimit(reservation, null).catch(() => {});
               controller.close();
             }
           },
@@ -358,7 +359,10 @@ export async function POST(request: NextRequest) {
 
       // Non-streaming
       const responseBody = await response.text();
-      const canonicalResponse = adapter.parseResponse(responseBody, response.status);
+      let canonicalResponse = adapter.parseResponse(responseBody, response.status);
+      canonicalResponse = normalizeCanonicalResponse(canonicalResponse);
+
+      await settleApiKeyRateLimit(reservation, canonicalResponse.usage?.total_tokens ?? null);
 
       await createRequestLog({
         apiKeyId: apiKey.id,

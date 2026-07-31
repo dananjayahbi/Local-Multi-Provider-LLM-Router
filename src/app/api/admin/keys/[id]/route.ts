@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateApiKey, deleteApiKey } from "@/engine/data-access/api-keys";
-import { disableKey, enableKey, reactivateKey } from "@/engine/health-engine";
+import { disableKey, enableKey, reactivateKey, resetPenalty } from "@/engine/health-engine";
+import { parseRateLimitInput } from "@/lib/api-key-rate-limits";
 
 export async function PUT(
   request: NextRequest,
@@ -9,8 +10,30 @@ export async function PUT(
   try {
     const { id } = await params;
     const body = await request.json();
-    const { label, secret } = body;
-    const apiKey = await updateApiKey(id, { label, secret });
+    const { label, secret, rpmLimit, tpmLimit } = body;
+
+    const parsedRpm = parseRateLimitInput(rpmLimit, {
+      mode: "update",
+      fieldName: "rpmLimit",
+    });
+    if (parsedRpm.error) {
+      return NextResponse.json({ error: parsedRpm.error }, { status: 400 });
+    }
+
+    const parsedTpm = parseRateLimitInput(tpmLimit, {
+      mode: "update",
+      fieldName: "tpmLimit",
+    });
+    if (parsedTpm.error) {
+      return NextResponse.json({ error: parsedTpm.error }, { status: 400 });
+    }
+
+    const apiKey = await updateApiKey(id, {
+      label,
+      secret,
+      rpmLimit: parsedRpm.value,
+      tpmLimit: parsedTpm.value,
+    });
     return NextResponse.json(apiKey);
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
@@ -48,6 +71,9 @@ export async function PATCH(
         break;
       case "reactivate":
         await reactivateKey(id);
+        break;
+      case "reset-penalty":
+        await resetPenalty(id);
         break;
       default:
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
