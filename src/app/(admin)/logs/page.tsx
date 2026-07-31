@@ -176,7 +176,7 @@ export default function LogsPage() {
                   {expandedRows.has(log.id) && (
                     <TableRow key={`${log.id}-expand`}>
                       <TableCell colSpan={8} className="bg-muted/30">
-                        <div className="grid grid-cols-3 gap-2 text-xs py-2 px-4">
+                        <div className="grid grid-cols-4 gap-2 text-xs py-2 px-4">
                           <div>
                             <span className="text-muted-foreground">HTTP Status:</span>{" "}
                             {log.httpStatus || "N/A"}
@@ -190,6 +190,10 @@ export default function LogsPage() {
                             {log.providerModel?.displayName || "N/A"}
                           </div>
                           <div>
+                            <span className="text-muted-foreground">API Key:</span>{" "}
+                            {log.apiKey?.label || "?"}
+                          </div>
+                          <div>
                             <span className="text-muted-foreground">Prompt Tokens:</span>{" "}
                             {log.promptTokens ?? "?"}
                           </div>
@@ -200,6 +204,10 @@ export default function LogsPage() {
                           <div>
                             <span className="text-muted-foreground">Error:</span>{" "}
                             {log.errorClassification || "None"}
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Tier:</span>{" "}
+                            {log.tier || "N/A"}
                           </div>
                         </div>
                       </TableCell>

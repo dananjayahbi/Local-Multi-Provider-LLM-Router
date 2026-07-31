@@ -46,14 +46,15 @@ export default function UsagePage() {
   const buildParams = useCallback(() => {
     const { preset: p, dateRange: dr, customFrom: cf, customTo: ct, filters: f } = paramsRef.current;
     const params = new URLSearchParams();
-    let from: Date, to: Date;
+    let from: Date;
+    let to: Date = new Date(); // Always live for non-custom
 
     if (p === "custom") {
       from = cf ? new Date(cf) : new Date(0);
       to = ct ? new Date(ct) : new Date();
     } else {
       from = dr.from;
-      to = dr.to;
+      // to stays as new Date() — live clock, not stale state
     }
 
     params.set("dateFrom", from.toISOString());
