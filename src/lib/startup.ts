@@ -14,6 +14,7 @@ export async function runStartup(): Promise<void> {
     console.log("");
     console.log("══════════════════════════════════════════════════════");
     console.log("  LOCAL MULTI-PROVIDER LLM ROUTER");
+    console.log(`  Running on http://localhost:${process.env.PORT || "4006"}`);
     console.log("══════════════════════════════════════════════════════");
     console.log("");
     console.log("  🔑 YOUR UNIFIED GATEWAY KEY:");

@@ -4,9 +4,9 @@
   "description": "Self-hosted Next.js application pooling free-tier LLM API keys behind an OpenAI-compatible gateway",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 4006",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 4006",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",

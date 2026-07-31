@@ -89,7 +89,7 @@ export default function SettingsPage() {
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
             This is the key you paste into VS Code Copilot or any OpenAI-compatible client.
-            Point your client to <code className="bg-muted px-1 py-0.5 rounded">http://localhost:3000/api/gateway/v1</code>
+            Point your client to <code className="bg-muted px-1 py-0.5 rounded">http://localhost:4006/api/gateway/v1</code>
           </p>
           <div className="flex items-center gap-2">
             <code className="flex-1 bg-muted px-3 py-2 rounded text-sm">
