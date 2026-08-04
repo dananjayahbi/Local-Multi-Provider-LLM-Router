@@ -363,8 +363,7 @@ async function* streamResponse(
   let buffer = "";
   let deltaCount = 0;
   let skippedEmptyChoices = 0;
-  let rawBytes: string[] = [];
-  let emittedBytes: string[] = [];
+  let sawTerminal = false;
   const streamUsage: { promptTokens?: number; completionTokens?: number } = {};
 
   console.error(`[stream] starting stream for key=${meta.apiKeyId.slice(0, 8)} model=${meta.virtualModel}`);
@@ -387,6 +386,9 @@ async function* streamResponse(
             skippedEmptyChoices++;
             continue;
           }
+          if (delta.choices.some((c) => c.finish_reason != null)) {
+            sawTerminal = true;
+          }
           deltaCount++;
           // Capture usage from stream chunks (last chunk often has usage)
           if (delta.usage) {
@@ -405,6 +407,9 @@ async function* streamResponse(
         if (!delta.choices || delta.choices.length === 0) {
           skippedEmptyChoices++;
         } else {
+          if (delta.choices.some((c) => c.finish_reason != null)) {
+            sawTerminal = true;
+          }
           deltaCount++;
           if (delta.usage) {
             streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
@@ -413,6 +418,15 @@ async function* streamResponse(
           yield delta;
         }
       }
+    }
+
+    // Guarantee a terminal finish_reason chunk even if the upstream provider
+    // ended with just `data: [DONE]` and never emitted an explicit stop reason.
+    if (!sawTerminal) {
+      console.error(
+        `[stream] provider never emitted finish_reason — injecting synthetic terminal for key=${meta.apiKeyId.slice(0, 8)}`
+      );
+      yield { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
     }
 
     console.error(`[stream] done: deltas=${deltaCount} skipped_empty=${skippedEmptyChoices} key=${meta.apiKeyId.slice(0, 8)}`);

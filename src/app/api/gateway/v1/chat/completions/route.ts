@@ -3,11 +3,15 @@
 // OpenAI-compatible endpoint for LLM chat requests.
 
 export const maxDuration = 300; // 5 min for long streaming requests
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export const fetchCache = "default-no-store";
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyGatewayKey } from "@/lib/gateway-key";
-import { CanonicalRequest } from "@/engine/canonical";
+import { CanonicalRequest, CanonicalDelta } from "@/engine/canonical";
 import { orchestrate } from "@/engine/orchestrator";
 import { serializeResponse, serializeDelta, serializeStreamEnd } from "@/engine/serializer";
 import { getAdapter } from "@/engine/adapters";
@@ -95,7 +99,7 @@ export async function POST(request: NextRequest) {
       messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
       system: undefined,
       temperature: rawBody.temperature as number | undefined,
-      max_tokens: rawBody.max_tokens as number | undefined,
+      max_tokens: (rawBody.max_tokens ?? rawBody.max_completion_tokens) as number | undefined,
       top_p: rawBody.top_p as number | undefined,
       stream: (rawBody.stream as boolean) || false,
       tools: rawBody.tools as CanonicalRequest["tools"],
@@ -154,29 +158,38 @@ export async function POST(request: NextRequest) {
     // Streaming
     if (rawBody.stream && result.streamGenerator) {
       const encoder = new TextEncoder();
+      // Terminal chunk guaranteeing a valid choices array is always emitted.
+      const terminalChunk = serializeDelta({
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      });
+
       const stream = new ReadableStream({
         async start(controller) {
-          let hasContent = false;
+          let hasTerminal = false;
           try {
             for await (const delta of result.streamGenerator!) {
               const chunk = serializeDelta(delta);
               if (chunk) {
-                hasContent = true;
                 controller.enqueue(encoder.encode(chunk));
+                if (delta.choices?.some((c) => c.finish_reason != null)) {
+                  hasTerminal = true;
+                }
               }
             }
-            if (!hasContent) {
-              console.error("[gateway:stream] no content deltas — injecting fallback");
-              const fallback = serializeDelta({
-                choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "stop" }],
-              });
-              if (fallback) controller.enqueue(encoder.encode(fallback));
-            }
-            controller.enqueue(encoder.encode(serializeStreamEnd()));
           } catch (err) {
-            console.error("[gateway:stream] error:", err);
+            // Never sever the stream silently. If the upstream stream throws
+            // mid-generation, we still emit a synthetic terminal chunk below.
+            console.error("[gateway:stream] mid-stream error, injecting terminal chunk:", err);
           } finally {
-            controller.close();
+            // Guarantee the client always receives a terminal finish_reason
+            // chunk + [DONE], so it never sees a stream with no choices.
+            try {
+              if (!hasTerminal && terminalChunk) {
+                controller.enqueue(encoder.encode(terminalChunk));
+              }
+              controller.enqueue(encoder.encode(serializeStreamEnd()));
+            } catch {}
+            try { controller.close(); } catch {}
           }
         },
       });
@@ -186,6 +199,7 @@ export async function POST(request: NextRequest) {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
         },
       });
     }
@@ -247,7 +261,7 @@ export async function POST(request: NextRequest) {
       messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
       system: undefined,
       temperature: rawBody.temperature as number | undefined,
-      max_tokens: rawBody.max_tokens as number | undefined,
+      max_tokens: (rawBody.max_tokens ?? rawBody.max_completion_tokens) as number | undefined,
       top_p: rawBody.top_p as number | undefined,
       stream: (rawBody.stream as boolean) || false,
       tools: rawBody.tools as CanonicalRequest["tools"],
@@ -316,9 +330,21 @@ export async function POST(request: NextRequest) {
         const decoder = new TextDecoder();
         let buffer = "";
 
+        const terminalChunk = serializeDelta({
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        });
         const stream = new ReadableStream({
           async start(controller) {
-            let hasContent = false;
+            let hasTerminal = false;
+            const emitDelta = (delta: CanonicalDelta) => {
+              const chunk = serializeDelta(delta);
+              if (chunk) {
+                controller.enqueue(encoder.encode(chunk));
+                if (delta.choices?.some((c) => c.finish_reason != null)) {
+                  hasTerminal = true;
+                }
+              }
+            };
             try {
               while (true) {
                 const { done, value } = await reader.read();
@@ -330,37 +356,27 @@ export async function POST(request: NextRequest) {
                   if (!line.trim()) continue;
                   const delta = adapter.parseStreamChunk(line);
                   if (delta && delta.choices && delta.choices.length > 0) {
-                    const chunk = serializeDelta(delta);
-                    if (chunk) {
-                      hasContent = true;
-                      controller.enqueue(encoder.encode(chunk));
-                    }
+                    emitDelta(delta);
                   }
                 }
               }
               if (buffer.trim()) {
                 const delta = adapter.parseStreamChunk(buffer);
                 if (delta && delta.choices && delta.choices.length > 0) {
-                  const chunk = serializeDelta(delta);
-                  if (chunk) {
-                    hasContent = true;
-                    controller.enqueue(encoder.encode(chunk));
-                  }
+                  emitDelta(delta);
                 }
               }
-              if (!hasContent) {
-                console.error("[gateway:direct-stream] no content — injecting fallback");
-                const fallback = serializeDelta({
-                  choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "stop" }],
-                });
-                if (fallback) controller.enqueue(encoder.encode(fallback));
-              }
-              controller.enqueue(encoder.encode(serializeStreamEnd()));
             } catch (err) {
-              console.error("[gateway:direct-stream] error:", err);
+              console.error("[gateway:direct-stream] mid-stream error, injecting terminal chunk:", err);
             } finally {
-              settleApiKeyRateLimit(reservation, null).catch(() => {});
-              controller.close();
+              try {
+                if (!hasTerminal && terminalChunk) {
+                  controller.enqueue(encoder.encode(terminalChunk));
+                }
+                controller.enqueue(encoder.encode(serializeStreamEnd()));
+              } catch {}
+              try { settleApiKeyRateLimit(reservation, null).catch(() => {}); } catch {}
+              try { controller.close(); } catch {}
             }
           },
         });
