@@ -107,34 +107,58 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(entries);
     }
 
-    // No specific filter — return all keys currently in the limiter
+    // No specific filter — return all keys that have limits configured OR have active traffic
     const allSnapshots = getAllKeyRateSnapshots();
-    if (allSnapshots.length === 0) {
-      return NextResponse.json([]);
-    }
 
-    const keys = await prisma.apiKey.findMany({
-      where: { id: { in: allSnapshots.map((s) => s.apiKeyId) } },
+    // Also query DB for all keys that have limits set (even if no traffic yet)
+    const limitedKeysDb = await prisma.apiKey.findMany({
+      where: {
+        OR: [{ rpmLimit: { not: null } }, { tpmLimit: { not: null } }],
+      },
       select: { id: true, label: true, rpmLimit: true, tpmLimit: true, provider: { select: { name: true } } },
     });
 
-    const keyMap = new Map(keys.map((k) => [k.id, k]));
-    const entries: RateLimitEntry[] = allSnapshots.map((s) => {
-      const k = keyMap.get(s.apiKeyId);
-      return {
-        apiKeyId: s.apiKeyId,
-        apiKeyLabel: k?.label ?? s.apiKeyId,
-        providerName: k?.provider.name ?? "Unknown",
-        rpmCurrent: s.rpmCurrent,
-        rpmLimit: k?.rpmLimit ?? null,
-        tpmCurrent: s.tpmCurrent,
-        tpmLimit: k?.tpmLimit ?? null,
-        isWaiting: s.isWaiting,
-        waitingCount: s.waitingCount,
-      };
-    });
+    // Merge: start with DB-limited keys, then overlay live snapshots
+    const entryMap = new Map<string, RateLimitEntry>();
 
-    return NextResponse.json(entries);
+    for (const k of limitedKeysDb) {
+      entryMap.set(k.id, {
+        apiKeyId: k.id,
+        apiKeyLabel: k.label,
+        providerName: k.provider.name,
+        rpmCurrent: 0,
+        rpmLimit: k.rpmLimit,
+        tpmCurrent: 0,
+        tpmLimit: k.tpmLimit,
+        isWaiting: false,
+        waitingCount: 0,
+      });
+    }
+
+    for (const s of allSnapshots) {
+      const existing = entryMap.get(s.apiKeyId);
+      if (existing) {
+        existing.rpmCurrent = s.rpmCurrent;
+        existing.tpmCurrent = s.tpmCurrent;
+        existing.isWaiting = s.isWaiting;
+        existing.waitingCount = s.waitingCount;
+      } else {
+        // Snapshot for a key not in DB? Shouldn't normally happen, but handle
+        entryMap.set(s.apiKeyId, {
+          apiKeyId: s.apiKeyId,
+          apiKeyLabel: s.apiKeyId,
+          providerName: "Unknown",
+          rpmCurrent: s.rpmCurrent,
+          rpmLimit: null,
+          tpmCurrent: s.tpmCurrent,
+          tpmLimit: null,
+          isWaiting: s.isWaiting,
+          waitingCount: s.waitingCount,
+        });
+      }
+    }
+
+    return NextResponse.json(Array.from(entryMap.values()));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

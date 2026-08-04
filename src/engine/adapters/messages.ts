@@ -197,6 +197,7 @@ export const messagesAdapter: ProviderAdapter = {
             ],
           };
         }
+        // Unknown delta type — skip silently
         return null;
       }
       case "content_block_start": {

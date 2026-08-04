@@ -194,7 +194,7 @@ export async function orchestrate(
         method: "POST",
         headers,
         body,
-        signal: AbortSignal.timeout(120_000), // 2 min timeout
+        signal: AbortSignal.timeout(300_000), // 5 min timeout
       });
 
       const latencyMs = Date.now() - startTime;
@@ -361,7 +361,13 @@ async function* streamResponse(
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let deltaCount = 0;
+  let skippedEmptyChoices = 0;
+  let rawBytes: string[] = [];
+  let emittedBytes: string[] = [];
   const streamUsage: { promptTokens?: number; completionTokens?: number } = {};
+
+  console.error(`[stream] starting stream for key=${meta.apiKeyId.slice(0, 8)} model=${meta.virtualModel}`);
 
   try {
     while (true) {
@@ -376,6 +382,12 @@ async function* streamResponse(
         if (!line.trim()) continue;
         const delta = adapter.parseStreamChunk(line);
         if (delta) {
+          // Check for empty choices at stream level
+          if (!delta.choices || delta.choices.length === 0) {
+            skippedEmptyChoices++;
+            continue;
+          }
+          deltaCount++;
           // Capture usage from stream chunks (last chunk often has usage)
           if (delta.usage) {
             streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
@@ -390,13 +402,20 @@ async function* streamResponse(
     if (buffer.trim()) {
       const delta = adapter.parseStreamChunk(buffer);
       if (delta) {
-        if (delta.usage) {
-          streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
-          streamUsage.completionTokens = delta.usage.completion_tokens ?? streamUsage.completionTokens;
+        if (!delta.choices || delta.choices.length === 0) {
+          skippedEmptyChoices++;
+        } else {
+          deltaCount++;
+          if (delta.usage) {
+            streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
+            streamUsage.completionTokens = delta.usage.completion_tokens ?? streamUsage.completionTokens;
+          }
+          yield delta;
         }
-        yield delta;
       }
     }
+
+    console.error(`[stream] done: deltas=${deltaCount} skipped_empty=${skippedEmptyChoices} key=${meta.apiKeyId.slice(0, 8)}`);
   } finally {
     reader.releaseLock();
 

@@ -34,6 +34,12 @@ export function serializeResponse(canonical: CanonicalResponse): object {
 }
 
 export function serializeDelta(delta: CanonicalDelta): string {
+  // Skip deltas with no choices — some providers emit empty-choice chunks
+  // (e.g., during tool-call handoffs) that would break Copilot.
+  if (!delta.choices || delta.choices.length === 0) {
+    return "";
+  }
+
   const payload: Record<string, unknown> = {
     id: delta.id || "",
     object: "chat.completion.chunk",
@@ -41,7 +47,7 @@ export function serializeDelta(delta: CanonicalDelta): string {
     model: delta.model || "",
     choices: delta.choices.map((c) => ({
       index: c.index,
-      delta: c.delta,
+      delta: c.delta ?? {}, // some providers omit delta — ensure {} so JSON.stringify never drops it
       finish_reason: c.finish_reason ?? null,
     })),
   };

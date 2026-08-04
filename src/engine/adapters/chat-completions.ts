@@ -7,6 +7,7 @@ import {
   CanonicalTool,
   contentToParts,
 } from "../canonical";
+import { normalizeCanonicalResponse } from "../response-normalizer";
 
 function generateId(): string {
   return "chatcmpl-" + crypto.randomUUID();
@@ -66,7 +67,7 @@ export const chatCompletionsAdapter: ProviderAdapter = {
       finish_reason: (c.finish_reason as CanonicalResponse["choices"][0]["finish_reason"]) ?? null,
     }));
 
-    return {
+    return normalizeCanonicalResponse({
       id: raw.id || generateId(),
       model: raw.model || "",
       choices,
@@ -78,7 +79,7 @@ export const chatCompletionsAdapter: ProviderAdapter = {
           }
         : undefined,
       created: raw.created ?? Math.floor(Date.now() / 1000),
-    };
+    });
   },
 
   parseStreamChunk(chunk: string): CanonicalDelta | null {
@@ -96,6 +97,8 @@ export const chatCompletionsAdapter: ProviderAdapter = {
           delta: (c.delta || {}) as CanonicalDelta["choices"][0]["delta"],
           finish_reason: c.finish_reason ?? undefined,
         }));
+        // Providers sometimes emit empty choices[] between tool-call handoffs
+        if (choices.length === 0) continue;
         return {
           id: raw.id,
           model: raw.model,

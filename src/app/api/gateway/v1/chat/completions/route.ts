@@ -2,6 +2,8 @@
 // POST /api/gateway/v1/chat/completions
 // OpenAI-compatible endpoint for LLM chat requests.
 
+export const maxDuration = 300; // 5 min for long streaming requests
+
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyGatewayKey } from "@/lib/gateway-key";
@@ -154,17 +156,25 @@ export async function POST(request: NextRequest) {
       const encoder = new TextEncoder();
       const stream = new ReadableStream({
         async start(controller) {
+          let hasContent = false;
           try {
             for await (const delta of result.streamGenerator!) {
               const chunk = serializeDelta(delta);
-              controller.enqueue(encoder.encode(chunk));
+              if (chunk) {
+                hasContent = true;
+                controller.enqueue(encoder.encode(chunk));
+              }
+            }
+            if (!hasContent) {
+              console.error("[gateway:stream] no content deltas — injecting fallback");
+              const fallback = serializeDelta({
+                choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "stop" }],
+              });
+              if (fallback) controller.enqueue(encoder.encode(fallback));
             }
             controller.enqueue(encoder.encode(serializeStreamEnd()));
           } catch (err) {
-            const errorChunk = JSON.stringify({
-              error: { message: err instanceof Error ? err.message : "Stream error" },
-            });
-            controller.enqueue(encoder.encode(`data: ${errorChunk}\n\n`));
+            console.error("[gateway:stream] error:", err);
           } finally {
             controller.close();
           }
@@ -268,7 +278,7 @@ export async function POST(request: NextRequest) {
         method: "POST",
         headers,
         body,
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(300_000),
       });
 
       const latencyMs = Date.now() - startTime;
@@ -308,6 +318,7 @@ export async function POST(request: NextRequest) {
 
         const stream = new ReadableStream({
           async start(controller) {
+            let hasContent = false;
             try {
               while (true) {
                 const { done, value } = await reader.read();
@@ -318,21 +329,35 @@ export async function POST(request: NextRequest) {
                 for (const line of lines) {
                   if (!line.trim()) continue;
                   const delta = adapter.parseStreamChunk(line);
-                  if (delta) {
-                    controller.enqueue(encoder.encode(serializeDelta(delta)));
+                  if (delta && delta.choices && delta.choices.length > 0) {
+                    const chunk = serializeDelta(delta);
+                    if (chunk) {
+                      hasContent = true;
+                      controller.enqueue(encoder.encode(chunk));
+                    }
                   }
                 }
               }
               if (buffer.trim()) {
                 const delta = adapter.parseStreamChunk(buffer);
-                if (delta) controller.enqueue(encoder.encode(serializeDelta(delta)));
+                if (delta && delta.choices && delta.choices.length > 0) {
+                  const chunk = serializeDelta(delta);
+                  if (chunk) {
+                    hasContent = true;
+                    controller.enqueue(encoder.encode(chunk));
+                  }
+                }
+              }
+              if (!hasContent) {
+                console.error("[gateway:direct-stream] no content — injecting fallback");
+                const fallback = serializeDelta({
+                  choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "stop" }],
+                });
+                if (fallback) controller.enqueue(encoder.encode(fallback));
               }
               controller.enqueue(encoder.encode(serializeStreamEnd()));
             } catch (err) {
-              const errorChunk = JSON.stringify({
-                error: { message: err instanceof Error ? err.message : "Stream error" },
-              });
-              controller.enqueue(encoder.encode(`data: ${errorChunk}\n\n`));
+              console.error("[gateway:direct-stream] error:", err);
             } finally {
               settleApiKeyRateLimit(reservation, null).catch(() => {});
               controller.close();
@@ -344,11 +369,12 @@ export async function POST(request: NextRequest) {
           apiKeyId: apiKey.id,
           providerModelId: providerModel.id,
           outcome: "SUCCESS",
-          latencyMs: Date.now() - startTime,
+          latencyMs,
           requestedVirtualModel: requestedModel,
         });
 
         return new Response(stream, {
+          status: response.status,
           headers: {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
