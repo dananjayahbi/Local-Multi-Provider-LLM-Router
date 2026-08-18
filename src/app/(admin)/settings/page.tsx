@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Copy, RefreshCw, Eye, EyeOff, Save } from "lucide-react";
+import { BenchmarkSettingsPanel } from "@/components/settings/benchmark-settings-panel";
 
 interface SettingsData {
   gatewayKeyPrefix: string;
@@ -121,6 +122,9 @@ export default function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Benchmark Engine Settings */}
+      <BenchmarkSettingsPanel />
 
       {/* Penalty Engine Settings */}
       <Card>

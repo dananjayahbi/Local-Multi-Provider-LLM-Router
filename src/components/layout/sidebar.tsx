@@ -11,12 +11,16 @@ import {
   Settings,
   Zap,
   BarChart3,
+  Gauge,
+  Compass,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/providers", label: "Providers", icon: Server },
   { href: "/pools", label: "Pools", icon: Layers },
+  { href: "/benchmarks", label: "Benchmarks", icon: Gauge },
+  { href: "/discovery", label: "Discovery", icon: Compass },
   { href: "/usage", label: "Usage", icon: BarChart3 },
   { href: "/logs", label: "Logs", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },

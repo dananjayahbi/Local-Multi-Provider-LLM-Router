@@ -3,7 +3,10 @@
 // singleton and display the unified gateway key.
 
 import { initializeAppSettings } from "@/engine/data-access/settings";
-import { checkAndRecoverExpiredPenalties } from "@/engine/health-engine";
+import {
+  checkAndRecoverExpiredPenalties,
+  checkAndRecoverExpiredCooldowns,
+} from "@/engine/health-engine";
 
 let gatewayKeyShown = false;
 
@@ -33,5 +36,11 @@ export async function runStartup(): Promise<void> {
   const recovered = await checkAndRecoverExpiredPenalties();
   if (recovered > 0) {
     console.log(`  ✅ Recovered ${recovered} expired penalty(s) on startup.`);
+  }
+
+  // Recover any expired cooldowns on startup
+  const recoveredCooldowns = await checkAndRecoverExpiredCooldowns();
+  if (recoveredCooldowns > 0) {
+    console.log(`  ✅ Recovered ${recoveredCooldowns} expired cooldown(s) on startup.`);
   }
 }

@@ -197,3 +197,57 @@ export async function resetKeyHealth(apiKeyId: string): Promise<void> {
     },
   });
 }
+
+// ─── Benchmark State Transitions ────────────────────────
+// Extends the state machine with TESTING and COOLDOWN states.
+
+export async function setKeyTesting(apiKeyId: string): Promise<void> {
+  await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: { status: "TESTING" },
+  });
+}
+
+export async function setKeyCooldown(apiKeyId: string, cooldownSeconds: number): Promise<void> {
+  await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: {
+      status: "COOLDOWN",
+      penaltyExpiresAt: new Date(Date.now() + cooldownSeconds * 1000),
+    },
+  });
+}
+
+export async function setKeyActive(apiKeyId: string): Promise<void> {
+  await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: {
+      status: "ACTIVE",
+      penaltyLevel: 0,
+      penaltyExpiresAt: null,
+      lastPenaltyEndedAt: null,
+      consecutiveFailures: 0,
+      suspendedReason: null,
+      manuallyDisabled: false,
+    },
+  });
+}
+
+/**
+ * Recovers keys that finished their COOLDOWN period back to ACTIVE.
+ * Called at the start of orchestration and by the scheduler.
+ */
+export async function checkAndRecoverExpiredCooldowns(): Promise<number> {
+  const now = new Date();
+  const result = await prisma.apiKey.updateMany({
+    where: {
+      status: "COOLDOWN",
+      penaltyExpiresAt: { lte: now },
+    },
+    data: {
+      status: "ACTIVE",
+      penaltyExpiresAt: null,
+    },
+  });
+  return result.count;
+}

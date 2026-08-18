@@ -1,0 +1,49 @@
+# ─── Hermes Agent Docker Compose ────────────────────────
+# Spins up the Hermes agent + MCP servers on the shared
+# bridge network with the LLM Router.
+
+version: "3.8"
+
+networks:
+  llm-router-net:
+    external: true
+
+services:
+  hermes-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes-agent
+    networks:
+      - llm-router-net
+    environment:
+      - ROUTER_ADMIN_URL=http://llm-router:4006/api/admin
+      - MCP_DDG_URL=http://mcp-duckduckgo:3000
+      - MCP_FETCH_URL=http://mcp-fetch:3000
+      - MCP_DOCS_URL=http://mcp-context7:3000
+    depends_on:
+      - mcp-duckduckgo
+      - mcp-fetch
+      - mcp-context7
+    restart: unless-stopped
+
+  mcp-duckduckgo:
+    image: mcp/duckduckgo-search:latest
+    container_name: mcp-duckduckgo
+    networks:
+      - llm-router-net
+    restart: unless-stopped
+
+  mcp-fetch:
+    image: mcp/fetch:latest
+    container_name: mcp-fetch
+    networks:
+      - llm-router-net
+    restart: unless-stopped
+
+  mcp-context7:
+    image: mcp/context7:latest
+    container_name: mcp-context7
+    networks:
+      - llm-router-net
+    restart: unless-stopped

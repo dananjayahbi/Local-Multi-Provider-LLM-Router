@@ -1,0 +1,10 @@
+{
+  "name": "mcp-http-server",
+  "version": "1.0.0",
+  "description": "Lightweight dependency-free HTTP MCP server (search, fetch, docs) for the Hermes agent",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}

@@ -28,7 +28,7 @@ model ApiKey {
   secretEncrypted   String
   rpmLimit          Int?
   tpmLimit          Int?
-  status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED
+  status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED, TESTING, COOLDOWN
   manuallyDisabled  Boolean   @default(false)
   penaltyLevel      Int       @default(0)
   penaltyExpiresAt  DateTime?
@@ -41,6 +41,7 @@ model ApiKey {
 
   provider    Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
   requestLogs RequestLog[]
+  benchmarks  ApiKeyBenchmark[]
 }
 
 // ─── Provider Model ─────────────────────────────────────
@@ -116,4 +117,49 @@ model AppSettings {
   penaltyMultiplier           Float @default(3)
   penaltyMaxCooldownSeconds    Int @default(21600)
   penaltyResetWindowSeconds    Int @default(3600)
+}
+
+// ─── ApiKey Benchmark ───────────────────────────────────
+// Stores historical benchmark metrics per execution run.
+model ApiKeyBenchmark {
+  id                 String   @id @default(cuid())
+  apiKeyId           String
+  ttftMs             Int
+  avgTps             Float
+  latencyDriftRatio  Float
+  isThrottled        Boolean  @default(false)
+  passed             Boolean
+  failureReason      String?
+  testedAt           DateTime @default(now())
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+}
+
+// ─── Benchmark Config (singleton) ───────────────────────
+// Stores benchmarking rules and throttle limits.
+model BenchmarkConfig {
+  id                     String  @id @default("singleton")
+  baselineProviderModelId String?
+  targetTps              Float   @default(60.0)
+  targetRpm              Int     @default(15)
+  ttftDriftThreshold     Float   @default(2.5)
+  tpsDriftThreshold      Float   @default(2.0)
+  postTestCooldownSeconds Int    @default(120)
+  maxParallelTests       Int     @default(3)
+  updatedAt              DateTime @updatedAt
+}
+
+// ─── Draft Provider ─────────────────────────────────────
+// Stores discovered LLM providers awaiting key assignment.
+model DraftProvider {
+  id               String   @id @default(cuid())
+  name             String
+  baseUrl          String
+  apiFormat        String   // CHAT_COMPLETIONS, MESSAGES, RESPONSES
+  sourceUrl        String?
+  status           String   @default("PENDING_KEY") // PENDING_KEY, TESTING, ACCEPTED, REJECTED
+  discoveredModels String   // JSON array of model IDs + capabilities
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }

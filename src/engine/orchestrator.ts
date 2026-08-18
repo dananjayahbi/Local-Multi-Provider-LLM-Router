@@ -16,6 +16,7 @@ import {
   applyFailure,
   resetKeyHealth,
   checkAndRecoverExpiredPenalties,
+  checkAndRecoverExpiredCooldowns,
 } from "./health-engine";
 import { createRequestLog } from "./data-access/request-logs";
 import {
@@ -90,7 +91,16 @@ function buildCandidates(pool: ResolvedPool): { tier1: Candidate[]; tier2: Candi
 
   for (const member of pool.members) {
     for (const key of member.keys) {
-      if (key.status === "DISABLED" || key.status === "SUSPENDED") continue;
+      // Exclude keys that are disabled, suspended, or locked
+      // for benchmarking (TESTING / COOLDOWN).
+      if (
+        key.status === "DISABLED" ||
+        key.status === "SUSPENDED" ||
+        key.status === "TESTING" ||
+        key.status === "COOLDOWN"
+      ) {
+        continue;
+      }
       allCandidates.push({ key, member });
     }
   }
@@ -125,8 +135,9 @@ export async function orchestrate(
   canonicalRequest: CanonicalRequest,
   resolvedPool: ResolvedPool
 ): Promise<OrchestratorResult> {
-  // Recover any expired penalties first
+  // Recover any expired penalties and cooldowns first
   await checkAndRecoverExpiredPenalties();
+  await checkAndRecoverExpiredCooldowns();
 
   const { tier1, tier2 } = buildCandidates(resolvedPool);
   const allCandidates = [...tier1, ...tier2];

@@ -1,0 +1,63 @@
+# ─── Full-Stack Docker Compose ─────────────────────────
+# Runs the LLM Router + Hermes discovery agent + MCP servers
+# together on a shared bridge network for full auto-discovery.
+
+networks:
+  llm-router-net:
+    driver: bridge
+
+volumes:
+  router-db:
+    # Persists the SQLite database across container restarts
+
+services:
+  # ─── LLM Router (Next.js) ────────────────────────────
+  llm-router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-router
+    networks:
+      - llm-router-net
+    ports:
+      - "4006:4006"
+    environment:
+      - NODE_ENV=production
+      - PORT=4006
+      - HOSTNAME=0.0.0.0
+      - DATABASE_URL=file:/app/prisma/dev.db
+      # ENCRYPTION_SECRET is injected from the host .env file
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET}
+    volumes:
+      - router-db:/app/prisma
+    restart: unless-stopped
+
+  # ─── Hermes Discovery Agent ──────────────────────────
+  hermes-agent:
+    build:
+      context: ./hermes
+      dockerfile: Dockerfile
+    container_name: hermes-agent
+    networks:
+      - llm-router-net
+    environment:
+      - ROUTER_ADMIN_URL=http://llm-router:4006/api/admin
+      - MCP_DDG_URL=http://mcp-server:3000
+      - MCP_FETCH_URL=http://mcp-server:3000
+      - MCP_DOCS_URL=http://mcp-server:3000
+    depends_on:
+      - llm-router
+      - mcp-server
+    restart: unless-stopped
+
+  # ─── Lightweight HTTP MCP Server ─────────────────────
+  # Single container exposing search / fetch_content / query_docs
+  # over HTTP (matches the Hermes agent's mcp-client.js protocol).
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    networks:
+      - llm-router-net
+    restart: unless-stopped
