@@ -82,4 +82,36 @@ ${String(content).slice(0, 12000)}`;
   }
 }
 
-module.exports = { extractProvidersWithLLM, isConfigured, LLM_MODEL };
+/**
+ * Generic LLM call function for chat conversations.
+ * Takes an array of messages and returns the assistant's response.
+ */
+async function callLLM(messages, options = {}) {
+  if (!isConfigured()) {
+    throw new Error("LLM not configured — set HERMES_LLM_API_KEY");
+  }
+
+  const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${LLM_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: options.model || LLM_MODEL,
+      messages,
+      temperature: options.temperature ?? 0.7,
+      max_tokens: options.max_tokens ?? 4000,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`LLM call failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+module.exports = { extractProvidersWithLLM, callLLM, isConfigured, LLM_MODEL };

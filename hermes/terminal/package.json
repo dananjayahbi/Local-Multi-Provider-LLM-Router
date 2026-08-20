@@ -1,0 +1,11 @@
+{
+  "name": "hermes-terminal",
+  "version": "1.0.0",
+  "description": "Real PTY-based WebSocket terminal server for the Hermes agent. Bridges a shell (running the hermes CLI) to the browser over WebSocket.",
+  "private": true,
+  "main": "server.js",
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}

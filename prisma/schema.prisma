@@ -198,3 +198,48 @@ model DiscoveryEvent {
 
   request DiscoveryRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 }
+
+// ─── Chat Session ──────────────────────────────────────
+// A persistent conversation with the Hermes agent. Mirrors
+// the full conversation and supports file uploads.
+model ChatSession {
+  id        String   @id @default(cuid())
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ChatMessage[]
+  files    ChatFile[]
+}
+
+// ─── Chat Message ──────────────────────────────────────
+// A single turn in a chat session. `role` is USER or AGENT.
+// `kind` distinguishes plain text from structured assets
+// (e.g. provider cards, rate-limit findings) that the UI can
+// render in a drawer instead of inline.
+model ChatMessage {
+  id        String   @id @default(cuid())
+  sessionId String
+  role      String   // USER, AGENT
+  kind      String   @default("TEXT") // TEXT, ASSETS, ERROR
+  content   String
+  assets    String?  // JSON array of structured asset payloads
+  createdAt DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ─── Chat File ─────────────────────────────────────────
+// A file uploaded by the user into a chat session (e.g. a
+// screenshot of a provider's rate-limit page, or a key file).
+model ChatFile {
+  id        String   @id @default(cuid())
+  sessionId String
+  name      String
+  mimeType  String
+  size      Int
+  data      String   // base64-encoded content (SQLite-friendly)
+  createdAt DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}

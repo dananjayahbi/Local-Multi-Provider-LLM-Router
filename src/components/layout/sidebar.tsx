@@ -13,6 +13,7 @@ import {
   BarChart3,
   Gauge,
   Compass,
+  Terminal,
 } from "lucide-react";
 
 const navItems = [
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/pools", label: "Pools", icon: Layers },
   { href: "/benchmarks", label: "Benchmarks", icon: Gauge },
   { href: "/discovery", label: "Discovery", icon: Compass },
+  { href: "/terminal", label: "Terminal", icon: Terminal },
   { href: "/usage", label: "Usage", icon: BarChart3 },
   { href: "/logs", label: "Logs", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
