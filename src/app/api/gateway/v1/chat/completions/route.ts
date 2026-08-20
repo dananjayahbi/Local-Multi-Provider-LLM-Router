@@ -102,20 +102,28 @@ export async function POST(request: NextRequest) {
           },
         },
       },
-      apiKeys: {
-        select: {
-          id: true, providerId: true, label: true, secret: true, secretEncrypted: true,
-          status: true, penaltyExpiresAt: true, penaltyLevel: true,
-          lastUsedAt: true, rpmLimit: true, tpmLimit: true,
-          rpdLimit: true, tpdLimit: true, tps: true,
-          timeToFirstTokenMs: true, contextWindow: true,
-          cacheCapable: true, cacheDiscountFactor: true,
+      poolApiKeys: {
+        include: {
+          apiKey: {
+            select: {
+              id: true, providerId: true, label: true, secret: true, secretEncrypted: true,
+              status: true, penaltyExpiresAt: true, penaltyLevel: true,
+              lastUsedAt: true, rpmLimit: true, tpmLimit: true,
+              rpdLimit: true, tpdLimit: true, tps: true,
+              timeToFirstTokenMs: true, contextWindow: true,
+              cacheCapable: true, cacheDiscountFactor: true,
+            },
+          },
         },
       },
     },
   });
 
   if (pool) {
+    // Resolve the keys attached to this pool via the PoolApiKey join.
+    // Provider-level keys can be shared across pools; the same key record is
+    // used, so its penalty/limits propagate to every pool that references it.
+    const poolKeys = pool.poolApiKeys.map((j) => j.apiKey);
     // ── Copilot injection (Task 06-07) ─────────────────
     // If a previous request for this pool rotated keys due to a limit,
     // append the askQuestion guidance so the model can ask the user whether
@@ -169,7 +177,7 @@ export async function POST(request: NextRequest) {
         providerName: m.providerModel.provider.name,
         baseUrl: m.providerModel.provider.baseUrl,
         apiFormat: m.providerModel.provider.apiFormat,
-        keys: pool.apiKeys
+        keys: poolKeys
           .filter((k) => k.providerId === m.providerModel.provider.id)
           .map((k) => ({
             apiKeyId: k.id,

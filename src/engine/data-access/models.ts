@@ -9,6 +9,27 @@ export async function getModelsByProvider(providerId: string) {
   });
 }
 
+/** All configured models across every provider (Models page, task 06-07). */
+export async function getAllModels() {
+  return prisma.providerModel.findMany({
+    include: {
+      provider: { select: { id: true, name: true, baseUrl: true, apiFormat: true } },
+    },
+    orderBy: [{ provider: { name: "asc" } }, { displayName: "asc" }],
+  });
+}
+
+/** Models that are available for pool creation (enabled only). */
+export async function getRoutableModels() {
+  return prisma.providerModel.findMany({
+    where: { enabled: true },
+    include: {
+      provider: { select: { id: true, name: true, baseUrl: true, apiFormat: true } },
+    },
+    orderBy: [{ provider: { name: "asc" } }, { displayName: "asc" }],
+  });
+}
+
 export async function getModelById(id: string) {
   return prisma.providerModel.findUnique({ where: { id } });
 }

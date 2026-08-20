@@ -25,6 +25,7 @@ import {
   Trash2,
   Gauge,
   Sparkles,
+  Unlink,
 } from "lucide-react";
 
 /** Full ApiKey shape as returned by the backend. */
@@ -53,11 +54,13 @@ export interface ApiKey {
 
 interface PoolKeysEditorProps {
   apiKeys: ApiKey[];
+  /** Pool the keys are attached to (for detach). */
+  poolId: string;
   /** Called after any mutation so the parent can re-fetch the pool. */
   onChanged: () => void;
 }
 
-export function PoolKeysEditor({ apiKeys, onChanged }: PoolKeysEditorProps) {
+export function PoolKeysEditor({ apiKeys, poolId, onChanged }: PoolKeysEditorProps) {
   const [editing, setEditing] = useState<ApiKey | null>(null);
   const [editForm, setEditForm] = useState<{ label: string; secret: string }>({ label: "", secret: "" });
   const [editLimits, setEditLimits] = useState<KeyLimitsForm>(emptyKeyLimitsForm());
@@ -73,9 +76,11 @@ export function PoolKeysEditor({ apiKeys, onChanged }: PoolKeysEditorProps) {
     onChanged();
   };
 
-  const handleDelete = async (key: ApiKey) => {
-    if (!confirm(`Delete API key "${key.label}"?`)) return;
-    await fetch(`/api/admin/keys/${key.id}`, { method: "DELETE" });
+  // Keys are provider-level and SHARED across pools (task 05), so removing
+  // one from this pool detaches it rather than deleting it globally.
+  const handleDetach = async (key: ApiKey) => {
+    if (!confirm(`Detach key "${key.label}" from this pool? The key stays available for other pools.`)) return;
+    await fetch(`/api/admin/pools/${poolId}/keys?apiKeyId=${key.id}`, { method: "DELETE" });
     onChanged();
   };
 
@@ -161,8 +166,8 @@ export function PoolKeysEditor({ apiKeys, onChanged }: PoolKeysEditorProps) {
                     <Button size="sm" variant="ghost" onClick={() => openEdit(k)}>
                       <Pencil className="h-3 w-3" />
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => handleDelete(k)}>
-                      <Trash2 className="h-3 w-3 text-red-500" />
+                    <Button size="sm" variant="ghost" onClick={() => handleDetach(k)} title="Detach from this pool">
+                      <Unlink className="h-3 w-3 text-red-500" />
                     </Button>
                   </div>
                 </div>

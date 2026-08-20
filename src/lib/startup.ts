@@ -7,7 +7,7 @@ import {
   checkAndRecoverExpiredPenalties,
   checkAndRecoverExpiredCooldowns,
 } from "@/engine/health-engine";
-import { backfillPlaintextSecrets } from "@/engine/data-access/api-keys";
+import { backfillPlaintextSecrets, backfillPoolKeys } from "@/engine/data-access/api-keys";
 
 let gatewayKeyShown = false;
 
@@ -16,6 +16,12 @@ export async function runStartup(): Promise<void> {
   const backfilled = await backfillPlaintextSecrets();
   if (backfilled > 0) {
     console.log(`  🔑 Backfilled ${backfilled} key(s) to plaintext secrets.`);
+  }
+
+  // Migrate legacy pool-owned keys → provider-level keys shared via PoolApiKey.
+  const migratedKeys = await backfillPoolKeys();
+  if (migratedKeys > 0) {
+    console.log(`  🔗 Migrated ${migratedKeys} pool-owned key(s) to shared provider-level keys.`);
   }
 
   const { plaintextKey } = await initializeAppSettings();

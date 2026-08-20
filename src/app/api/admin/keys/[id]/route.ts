@@ -11,7 +11,7 @@ export async function PUT(
     const { id } = await params;
     const body = await request.json();
     const {
-      label, secret, poolId,
+      label, secret,
       rpmLimit, tpmLimit, rpdLimit, tpdLimit,
       tps, timeToFirstTokenMs, contextWindow,
       cacheCapable, cacheDiscountFactor,
@@ -41,7 +41,6 @@ export async function PUT(
     const apiKey = await updateApiKey(id, {
       label,
       secret,
-      poolId,
       rpmLimit: rpm.value,
       tpmLimit: tpm.value,
       rpdLimit: rpd.value,

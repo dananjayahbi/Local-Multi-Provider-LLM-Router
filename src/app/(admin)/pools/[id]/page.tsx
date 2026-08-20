@@ -61,7 +61,7 @@ interface PoolDetail {
   gatewayKey: string;
   gatewayKeyPrefix: string;
   poolMembers: PoolMemberItem[];
-  apiKeys: ApiKey[];
+  poolApiKeys: { apiKey: ApiKey }[];
 }
 
 interface ProviderOption { id: string; name: string }
@@ -241,7 +241,7 @@ export default function PoolDetailPage() {
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
   if (!pool) return <div className="text-muted-foreground">Pool not found.</div>;
 
-  const apiKeys = pool.apiKeys || [];
+  const apiKeys = (pool.poolApiKeys || []).map((j) => j.apiKey);
   const healthyCount = apiKeys.filter((k) => k.status === "ACTIVE").length;
   const penalizedCount = apiKeys.filter((k) => k.status === "PENALIZED").length;
   const suspendedCount = apiKeys.filter((k) => k.status === "SUSPENDED").length;
@@ -414,9 +414,9 @@ export default function PoolDetailPage() {
       {/* ─── Pool Keys (top-level) ─── */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Pool Keys</h2>
-        <AddKeyDialog poolId={pool.id} onCreated={loadPool} />
+        <AddKeyDialog poolId={pool.id} existingKeyIds={apiKeys.map((k) => k.id)} onCreated={loadPool} />
       </div>
-      <PoolKeysEditor apiKeys={apiKeys} onChanged={loadPool} />
+      <PoolKeysEditor apiKeys={apiKeys} poolId={pool.id} onChanged={loadPool} />
 
       {/* ─── Members ─── */}
       <h2 className="text-lg font-semibold">Members</h2>

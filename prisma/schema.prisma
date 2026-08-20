@@ -16,6 +16,10 @@ model Provider {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // When this Provider was materialized from an approved discovery draft.
+  draftProviderId String?  @unique
+  draftProvider   DraftProvider? @relation(fields: [draftProviderId], references: [id], onDelete: SetNull)
+
   apiKeys        ApiKey[]
   providerModels ProviderModel[]
 }
@@ -27,6 +31,8 @@ model Provider {
 // always copyable. (design doc 06)
 model ApiKey {
   id                String    @id @default(cuid())
+  // LEGACY: keys are now provider-level credentials shared across pools via
+  // the PoolApiKey join table. `poolId` is kept only for one-time backfill.
   poolId            String?
   providerId        String
   label             String
@@ -61,6 +67,7 @@ model ApiKey {
   provider   Provider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
   requestLogs RequestLog[]
   benchmarks  ApiKeyBenchmark[]
+  poolApiKeys PoolApiKey[]
 }
 
 // ─── Provider Model ─────────────────────────────────────
@@ -96,8 +103,25 @@ model Pool {
   updatedAt         DateTime @updatedAt
 
   poolMembers PoolMember[]
-  apiKeys     ApiKey[]
+  poolApiKeys PoolApiKey[]
+  apiKeys     ApiKey[]       // legacy pool-owned keys (one-time backfill source)
   requestLogs RequestLog[]
+}
+
+// ─── Pool ↔ API Key (many-to-many) ────────────────────
+// A provider-level API key can be shared across MULTIPLE pools. The penalty
+// / limits live on the ApiKey, so sharing it propagates any penalty to every
+// pool that uses it. A pool references the keys it can route to via this join.
+model PoolApiKey {
+  id        String   @id @default(cuid())
+  poolId    String
+  apiKeyId  String
+  createdAt DateTime @default(now())
+
+  pool   Pool   @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@unique([poolId, apiKeyId])
 }
 
 // ─── Pool Member ────────────────────────────────────────
@@ -181,11 +205,21 @@ model DraftProvider {
   baseUrl          String
   apiFormat        String   // CHAT_COMPLETIONS, MESSAGES, RESPONSES
   sourceUrl        String?
+  // Onboarding pipeline stage (task 03-04):
+  //   RAW      — agent-discovered, informational card only
+  //   APPROVED — user approved; API key(s) can be configured
+  //   CONFIGURED — user pushed; models configured + materialized as a Provider
+  //   REJECTED — user dismissed
+  stage            String   @default("RAW")
   status           String   @default("PENDING_KEY") // PENDING_KEY, TESTING, ACCEPTED, REJECTED
   discoveredModels String   // JSON array of model IDs + capabilities
+  details          String?  // JSON blob of extra agent findings (read-only for the user)
   notes            String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+
+  // The real Provider created when this draft reaches CONFIGURED.
+  provider Provider?
 }
 
 // ─── Discovery Request ─────────────────────────────────

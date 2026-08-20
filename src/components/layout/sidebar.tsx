@@ -15,11 +15,13 @@ import {
   Compass,
   Terminal,
   FlaskConical,
+  Boxes,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/providers", label: "Providers", icon: Server },
+  { href: "/models", label: "Models", icon: Boxes },
   { href: "/pools", label: "Pools", icon: Layers },
   { href: "/benchmarks", label: "Benchmarks", icon: Gauge },
   { href: "/discovery", label: "Discovery", icon: Compass },

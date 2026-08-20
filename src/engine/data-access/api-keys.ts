@@ -1,8 +1,9 @@
 // ─── API Key Data Access ───────────────────────────────
-// Keys now belong to a pool (poolId) + provider, carry their own
-// rate/token/cache limits, and store the secret in PLAINTEXT
-// (local single-user → always copyable). `secretEncrypted` is kept
-// for backward-compat reads; new writes use `secret`.
+// Keys are now PROVIDER-LEVEL credentials (owned by a provider) that can be
+// SHARED across multiple pools via the PoolApiKey join table (task 05).
+// Penalties/limits live on the ApiKey, so sharing propagates penalty to every
+// pool using the key. Secrets stored in PLAINTEXT (always copyable).
+// `secretEncrypted` is kept for backward-compat reads; new writes use `secret`.
 
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/encryption";
@@ -25,15 +26,8 @@ export async function getKeysByProvider(providerId: string) {
   return prisma.apiKey.findMany({
     where: { providerId },
     orderBy: { createdAt: "asc" },
-  });
-}
-
-export async function getKeysByPool(poolId: string) {
-  return prisma.apiKey.findMany({
-    where: { poolId },
-    orderBy: { createdAt: "asc" },
     include: {
-      provider: { select: { id: true, name: true, baseUrl: true, apiFormat: true } },
+      poolApiKeys: { select: { poolId: true } },
     },
   });
 }
@@ -42,13 +36,41 @@ export async function getKeyById(id: string) {
   return prisma.apiKey.findUnique({ where: { id } });
 }
 
+/** All provider-level keys (used by pool key editor to attach shared keys). */
+export async function getAllKeys() {
+  await ensurePoolKeyBackfill();
+  return prisma.apiKey.findMany({
+    orderBy: { createdAt: "asc" },
+    include: {
+      provider: { select: { id: true, name: true, baseUrl: true, apiFormat: true } },
+      poolApiKeys: { select: { poolId: true } },
+    },
+  });
+}
+
+/** Keys attached to a pool via the PoolApiKey join. */
+export async function getKeysByPool(poolId: string) {
+  const joins = await prisma.poolApiKey.findMany({
+    where: { poolId },
+    include: {
+      apiKey: {
+        include: {
+          provider: { select: { id: true, name: true, baseUrl: true, apiFormat: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  return joins.map((j) => j.apiKey);
+}
+
 export async function createApiKey(
   providerId: string,
   data: ApiKeyInput & { poolId?: string | null }
 ) {
   return prisma.apiKey.create({
     data: {
-      poolId: data.poolId ?? null,
+      poolId: null, // provider-level; pool association goes through PoolApiKey
       providerId,
       label: data.label,
       secret: data.secret,
@@ -65,9 +87,8 @@ export async function createApiKey(
   });
 }
 
-export async function updateApiKey(id: string, data: Partial<ApiKeyInput> & { poolId?: string | null }) {
+export async function updateApiKey(id: string, data: Partial<ApiKeyInput>) {
   const updateData: Record<string, unknown> = {};
-  if (data.poolId !== undefined) updateData.poolId = data.poolId;
   if (data.label !== undefined) updateData.label = data.label;
   if (data.secret !== undefined) updateData.secret = data.secret;
   if (data.rpmLimit !== undefined) updateData.rpmLimit = data.rpmLimit;
@@ -84,6 +105,52 @@ export async function updateApiKey(id: string, data: Partial<ApiKeyInput> & { po
 
 export async function deleteApiKey(id: string) {
   await prisma.apiKey.delete({ where: { id } });
+}
+
+// ─── Pool ↔ Key attachment (PoolApiKey join) ───────────
+
+export async function addKeyToPool(poolId: string, apiKeyId: string) {
+  const existing = await prisma.poolApiKey.findUnique({
+    where: { poolId_apiKeyId: { poolId, apiKeyId } },
+  });
+  if (existing) return existing;
+  return prisma.poolApiKey.create({ data: { poolId, apiKeyId } });
+}
+
+export async function removeKeyFromPool(poolId: string, apiKeyId: string) {
+  await prisma.poolApiKey.deleteMany({ where: { poolId, apiKeyId } });
+}
+
+// ─── Legacy backfill ──────────────────────────────────
+// Migrate pool-owned keys (ApiKey.poolId) into PoolApiKey join rows so keys
+// become provider-level and shareable across pools. Idempotent.
+export async function backfillPoolKeys(): Promise<number> {
+  const legacyKeys = await prisma.apiKey.findMany({
+    where: { poolId: { not: null } },
+    select: { id: true, poolId: true },
+  });
+  let count = 0;
+  for (const k of legacyKeys) {
+    if (!k.poolId) continue;
+    const existing = await prisma.poolApiKey.findUnique({
+      where: { poolId_apiKeyId: { poolId: k.poolId, apiKeyId: k.id } },
+    });
+    if (!existing) {
+      await prisma.poolApiKey.create({ data: { poolId: k.poolId, apiKeyId: k.id } });
+      count++;
+    }
+    await prisma.apiKey.update({ where: { id: k.id }, data: { poolId: null } });
+  }
+  return count;
+}
+
+// Idempotent on-demand backfill guard. Called from discovery/pool entry points
+// since runStartup() is not wired into the Next.js server lifecycle.
+let poolKeyBackfillDone = false;
+export async function ensurePoolKeyBackfill(): Promise<void> {
+  if (poolKeyBackfillDone) return;
+  await backfillPoolKeys();
+  poolKeyBackfillDone = true;
 }
 
 // ─── Legacy decryption backfill ────────────────────────

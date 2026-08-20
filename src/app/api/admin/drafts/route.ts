@@ -36,7 +36,9 @@ export async function POST(request: NextRequest) {
       apiFormat: body.apiFormat,
       sourceUrl: body.sourceUrl ?? null,
       discoveredModels: body.discoveredModels ?? [],
+      details: body.details ?? null,
       notes: body.notes ?? null,
+      stage: body.stage ?? "RAW",
     });
 
     return NextResponse.json(draft, { status: 201 });

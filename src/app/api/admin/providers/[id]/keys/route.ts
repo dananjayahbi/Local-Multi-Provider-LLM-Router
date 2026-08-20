@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getKeysByProvider, createApiKey } from "@/engine/data-access/api-keys";
+import { getKeysByProvider, createApiKey, addKeyToPool } from "@/engine/data-access/api-keys";
 import { parseRateLimitInput } from "@/lib/api-key-rate-limits";
 
 export async function GET(
@@ -62,7 +62,6 @@ export async function POST(
     if (ctxP.error) return NextResponse.json({ error: ctxP.error }, { status: 400 });
 
     const apiKey = await createApiKey(id, {
-      poolId: poolId ?? null,
       label,
       secret,
       rpmLimit: rpm.value ?? null,
@@ -76,6 +75,11 @@ export async function POST(
       cacheDiscountFactor:
         cacheDiscountFactor != null ? Number(cacheDiscountFactor) : 0.1,
     });
+
+    // Optionally attach this provider-level key to a pool immediately (task 05).
+    if (poolId) {
+      await addKeyToPool(poolId, apiKey.id);
+    }
     return NextResponse.json(apiKey, { status: 201 });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
