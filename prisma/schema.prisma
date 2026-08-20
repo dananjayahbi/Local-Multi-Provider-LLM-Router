@@ -21,13 +21,29 @@ model Provider {
 }
 
 // ─── API Key ────────────────────────────────────────────
+// A key now belongs to a POOL (not just a provider), so each pool
+// can own its own set of keys from different providers with their
+// own rate/token limits. Local single-user → plaintext `secret`,
+// always copyable. (design doc 06)
 model ApiKey {
   id                String    @id @default(cuid())
+  poolId            String?
   providerId        String
   label             String
-  secretEncrypted   String
+  secret            String?       // plaintext (local single-user, always copyable)
+  secretEncrypted   String?       // kept for backward-compat / migration reads
+
+  // ── rate / token limits ──
   rpmLimit          Int?
   tpmLimit          Int?
+  rpdLimit          Int?
+  tpdLimit          Int?
+  tps               Float?        // tokens/sec (speed)
+  timeToFirstTokenMs Int?         // latency
+  contextWindow     Int?          // max context tokens
+  cacheCapable      Boolean   @default(true)
+  cacheDiscountFactor Float   @default(0.1) // cached-token price fraction
+
   status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED, TESTING, COOLDOWN
   manuallyDisabled  Boolean   @default(false)
   penaltyLevel      Int       @default(0)
@@ -35,13 +51,14 @@ model ApiKey {
   lastPenaltyEndedAt DateTime?
   suspendedReason   String?
   consecutiveFailures Int     @default(0)
-  calibrated        Boolean   @default(false) // true once a benchmark passed & configs were tuned
+  calibrated        Boolean   @default(false)
   lastCalibratedAt  DateTime?
   lastUsedAt        DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  provider    Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  pool       Pool?      @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  provider   Provider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
   requestLogs RequestLog[]
   benchmarks  ApiKeyBenchmark[]
 }
@@ -70,11 +87,16 @@ model Pool {
   name              String
   virtualModelName  String   @unique
   description       String?
-  routingStrategy   String   @default("ROUND_ROBIN") // ROUND_ROBIN, PRIORITY
+  routingStrategy   String   @default("KEY_AWARE") // ROUND_ROBIN, PRIORITY, KEY_AWARE
+  gatewayKey        String?  @unique   // plaintext per-pool key, always copyable
+  gatewayKeyPrefix  String?            // masked preview for list view
+  cacheAware        Boolean  @default(true)
+  stickyContextTokenBudget Int @default(0)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   poolMembers PoolMember[]
+  apiKeys     ApiKey[]
   requestLogs RequestLog[]
 }
 

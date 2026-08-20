@@ -12,7 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyGatewayKey } from "@/lib/gateway-key";
 import { CanonicalRequest, CanonicalDelta } from "@/engine/canonical";
-import { orchestrate } from "@/engine/orchestrator";
+import { orchestrate, ResolvedPool } from "@/engine/orchestrator";
 import { serializeResponse, serializeDelta, serializeStreamEnd } from "@/engine/serializer";
 import { getAdapter } from "@/engine/adapters";
 import { classifyError } from "@/engine/error-classifier";
@@ -25,6 +25,8 @@ import {
   settleApiKeyRateLimit,
 } from "@/engine/rate-limit/api-key-rate-limiter";
 import { estimateTokensForRateLimit } from "@/engine/rate-limit/token-estimator";
+import { takePendingInjection } from "@/engine/routing/conversation";
+import { buildInjection, InjectionInput, LimitName } from "@/engine/playground";
 
 export async function POST(request: NextRequest) {
   // Auth check
@@ -37,15 +39,8 @@ export async function POST(request: NextRequest) {
   }
 
   const token = authHeader.slice(7);
-  const settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
-  if (!settings || !verifyGatewayKey(token, settings.unifiedGatewayKeyHash)) {
-    return NextResponse.json(
-      { error: { message: "Invalid API key", type: "auth_error" } },
-      { status: 401 }
-    );
-  }
 
-  // Parse body
+  // Parse body (needed to resolve the target pool for per-pool key auth)
   let rawBody: Record<string, unknown>;
   try {
     rawBody = await request.json();
@@ -57,6 +52,31 @@ export async function POST(request: NextRequest) {
   }
 
   const requestedModel = (rawBody.model as string) || "";
+
+  // ─── Per-Pool Key Auth (Task 01) ─────────────────────
+  // A pool owns a plaintext gateway key; authenticating with it grants
+  // access to just that pool. Fall back to the legacy unified key.
+  const authPool = await prisma.pool.findUnique({
+    where: { virtualModelName: requestedModel },
+    select: { gatewayKey: true },
+  });
+
+  let authed = false;
+  if (authPool?.gatewayKey && authPool.gatewayKey === token) {
+    authed = true;
+  } else {
+    const settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
+    if (settings && verifyGatewayKey(token, settings.unifiedGatewayKeyHash)) {
+      authed = true;
+    }
+  }
+  if (!authed) {
+    return NextResponse.json(
+      { error: { message: "Invalid API key", type: "auth_error" } },
+      { status: 401 }
+    );
+  }
+
   console.error(
     `[gateway] Incoming: model=${requestedModel} stream=${rawBody.stream} ` +
     `tools=${Array.isArray(rawBody.tools) ? rawBody.tools.length : 0} ` +
@@ -74,29 +94,52 @@ export async function POST(request: NextRequest) {
           providerModel: {
             include: {
               provider: {
-                include: {
-                  apiKeys: {
-                    select: {
-                      id: true, label: true, secretEncrypted: true,
-                      status: true, penaltyExpiresAt: true,
-                      penaltyLevel: true, lastUsedAt: true,
-                      rpmLimit: true, tpmLimit: true,
-                    },
-                  },
+                select: {
+                  id: true, name: true, baseUrl: true, apiFormat: true,
                 },
               },
             },
           },
         },
       },
+      apiKeys: {
+        select: {
+          id: true, providerId: true, label: true, secret: true, secretEncrypted: true,
+          status: true, penaltyExpiresAt: true, penaltyLevel: true,
+          lastUsedAt: true, rpmLimit: true, tpmLimit: true,
+          rpdLimit: true, tpdLimit: true, tps: true,
+          timeToFirstTokenMs: true, contextWindow: true,
+          cacheCapable: true, cacheDiscountFactor: true,
+        },
+      },
     },
   });
 
   if (pool) {
+    // ── Copilot injection (Task 06-07) ─────────────────
+    // If a previous request for this pool rotated keys due to a limit,
+    // append the askQuestion guidance so the model can ask the user whether
+    // to switch directly or compact the chat (context is now uncached).
+    const pendingInjection = takePendingInjection(pool.id);
+    let messages = (rawBody.messages as CanonicalRequest["messages"]) || [];
+    if (pendingInjection) {
+      const guidance = buildInjection("compact_first", {
+        keyLabel: pendingInjection.keyLabel,
+        limitName: pendingInjection.limitName as LimitName,
+        nextKeyLabel: pendingInjection.nextKeyLabel,
+        promptTokens: pendingInjection.promptTokens,
+        lastPromptTokens: pendingInjection.lastPromptTokens,
+      } satisfies InjectionInput);
+      messages = [
+        { role: "system", content: guidance },
+        ...messages,
+      ];
+    }
+
     // Build canonical request
     const canonicalRequest: CanonicalRequest = {
       model: requestedModel,
-      messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
+      messages,
       system: undefined,
       temperature: rawBody.temperature as number | undefined,
       max_tokens: (rawBody.max_tokens ?? rawBody.max_completion_tokens) as number | undefined,
@@ -107,10 +150,15 @@ export async function POST(request: NextRequest) {
       stop: rawBody.stop as CanonicalRequest["stop"],
     };
 
-    const resolvedPool = {
+    // ── Resolve pool-owned keys per provider ───────────
+    // A pool's keys (pool.apiKeys) are routed to the member whose provider
+    // matches the key's provider.
+    const resolvedPool: ResolvedPool = {
       id: pool.id,
       name: pool.name,
       routingStrategy: pool.routingStrategy,
+      cacheAware: pool.cacheAware,
+      stickyContextTokenBudget: pool.stickyContextTokenBudget,
       members: pool.poolMembers.map((m) => ({
         memberId: m.id,
         priority: m.priority,
@@ -121,17 +169,27 @@ export async function POST(request: NextRequest) {
         providerName: m.providerModel.provider.name,
         baseUrl: m.providerModel.provider.baseUrl,
         apiFormat: m.providerModel.provider.apiFormat,
-        keys: m.providerModel.provider.apiKeys.map((k) => ({
-          apiKeyId: k.id,
-          apiKeyLabel: k.label,
-          secretEncrypted: k.secretEncrypted,
-          status: k.status,
-          penaltyLevel: k.penaltyLevel,
-          penaltyExpiresAt: k.penaltyExpiresAt,
-          lastUsedAt: k.lastUsedAt,
-          rpmLimit: k.rpmLimit as number | null,
-          tpmLimit: k.tpmLimit as number | null,
-        })),
+        keys: pool.apiKeys
+          .filter((k) => k.providerId === m.providerModel.provider.id)
+          .map((k) => ({
+            apiKeyId: k.id,
+            apiKeyLabel: k.label,
+            secret: k.secret,
+            secretEncrypted: k.secretEncrypted,
+            status: k.status,
+            penaltyLevel: k.penaltyLevel,
+            penaltyExpiresAt: k.penaltyExpiresAt,
+            lastUsedAt: k.lastUsedAt,
+            rpmLimit: k.rpmLimit as number | null,
+            tpmLimit: k.tpmLimit as number | null,
+            rpdLimit: k.rpdLimit as number | null,
+            tpdLimit: k.tpdLimit as number | null,
+            tps: k.tps as number | null,
+            timeToFirstTokenMs: k.timeToFirstTokenMs as number | null,
+            contextWindow: k.contextWindow as number | null,
+            cacheCapable: k.cacheCapable,
+            cacheDiscountFactor: k.cacheDiscountFactor,
+          })),
       })),
     };
 
@@ -222,6 +280,7 @@ export async function POST(request: NextRequest) {
           select: {
             id: true,
             label: true,
+            secret: true,
             secretEncrypted: true,
             status: true,
             rpmLimit: true,
@@ -248,7 +307,14 @@ export async function POST(request: NextRequest) {
     let decryptedKey: string;
 
     try {
-      decryptedKey = decrypt(apiKey.secretEncrypted);
+      decryptedKey =
+        apiKey.secret || (apiKey.secretEncrypted ? decrypt(apiKey.secretEncrypted) : "");
+      if (!decryptedKey) {
+        return NextResponse.json(
+          { error: { message: "API key has no secret", type: "internal_error" } },
+          { status: 500 }
+        );
+      }
     } catch {
       return NextResponse.json(
         { error: { message: "Failed to decrypt API key", type: "internal_error" } },

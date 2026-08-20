@@ -7,10 +7,17 @@ import {
   checkAndRecoverExpiredPenalties,
   checkAndRecoverExpiredCooldowns,
 } from "@/engine/health-engine";
+import { backfillPlaintextSecrets } from "@/engine/data-access/api-keys";
 
 let gatewayKeyShown = false;
 
 export async function runStartup(): Promise<void> {
+  // Backfill legacy encrypted secrets → plaintext (local single-user).
+  const backfilled = await backfillPlaintextSecrets();
+  if (backfilled > 0) {
+    console.log(`  🔑 Backfilled ${backfilled} key(s) to plaintext secrets.`);
+  }
+
   const { plaintextKey } = await initializeAppSettings();
 
   if (plaintextKey && !gatewayKeyShown) {

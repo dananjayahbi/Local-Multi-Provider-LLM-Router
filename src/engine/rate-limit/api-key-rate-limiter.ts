@@ -1,4 +1,5 @@
 const WINDOW_MS = 60_000;
+const DAY_WINDOW_MS = 24 * 3600_000;
 
 interface TokenRecord {
   reservationId: string;
@@ -7,8 +8,10 @@ interface TokenRecord {
 }
 
 interface KeyWindowState {
-  requestTimestamps: number[];
-  tokenRecords: TokenRecord[];
+  requestTimestamps: number[]; // RPM (60s)
+  tokenRecords: TokenRecord[]; // TPM (60s)
+  dailyRequestTs: number[]; // RPD (24h)
+  dailyTokenRecords: TokenRecord[]; // TPD (24h)
   tail: Promise<void>;
 }
 
@@ -17,6 +20,7 @@ export interface ApiKeyRateLimitReservation {
   reservationId: string;
   reservedTokens: number;
   hasTpmLimit: boolean;
+  requestTs: number; // epoch ms used for daily RPD accounting
 }
 
 interface WaitForApiKeyRateLimitInput {
@@ -35,6 +39,8 @@ function getKeyState(apiKeyId: string): KeyWindowState {
   const initial: KeyWindowState = {
     requestTimestamps: [],
     tokenRecords: [],
+    dailyRequestTs: [],
+    dailyTokenRecords: [],
     tail: Promise.resolve(),
   };
 
@@ -46,9 +52,17 @@ function pruneExpired(state: KeyWindowState, now: number): void {
   while (state.requestTimestamps.length > 0 && now - state.requestTimestamps[0] >= WINDOW_MS) {
     state.requestTimestamps.shift();
   }
-
   while (state.tokenRecords.length > 0 && now - state.tokenRecords[0].timestamp >= WINDOW_MS) {
     state.tokenRecords.shift();
+  }
+  while (state.dailyRequestTs.length > 0 && now - state.dailyRequestTs[0] >= DAY_WINDOW_MS) {
+    state.dailyRequestTs.shift();
+  }
+  while (
+    state.dailyTokenRecords.length > 0 &&
+    now - state.dailyTokenRecords[0].timestamp >= DAY_WINDOW_MS
+  ) {
+    state.dailyTokenRecords.shift();
   }
 }
 
@@ -105,8 +119,15 @@ async function reserveWithinWindow(
 
     if (waitMs <= 0) {
       const reservationId = crypto.randomUUID();
-      state.requestTimestamps.push(now);
+      const requestTs = now;
+      state.requestTimestamps.push(requestTs);
       state.tokenRecords.push({
+        reservationId,
+        timestamp: now,
+        tokens: normalizedRequestedTokens,
+      });
+      state.dailyRequestTs.push(requestTs);
+      state.dailyTokenRecords.push({
         reservationId,
         timestamp: now,
         tokens: normalizedRequestedTokens,
@@ -117,6 +138,7 @@ async function reserveWithinWindow(
         reservationId,
         reservedTokens: normalizedRequestedTokens,
         hasTpmLimit: Boolean(tpmLimit && tpmLimit > 0),
+        requestTs,
       };
     }
 
@@ -132,11 +154,22 @@ export async function waitForApiKeyRateLimit(
   const hasRateLimits = Boolean((rpmLimit && rpmLimit > 0) || (tpmLimit && tpmLimit > 0));
 
   if (!hasRateLimits) {
+    const reservationId = crypto.randomUUID();
+    const requestTs = Date.now();
+    const state = getKeyState(input.apiKeyId);
+    // Even without rpm/tpm limits, record daily usage for RPD/TPD awareness.
+    state.dailyRequestTs.push(requestTs);
+    state.dailyTokenRecords.push({
+      reservationId,
+      timestamp: requestTs,
+      tokens: Math.max(1, Math.floor(input.requestedTokens)),
+    });
     return {
       apiKeyId: input.apiKeyId,
-      reservationId: "",
+      reservationId,
       reservedTokens: Math.max(1, Math.floor(input.requestedTokens)),
       hasTpmLimit: false,
+      requestTs,
     };
   }
 
@@ -154,7 +187,7 @@ export async function settleApiKeyRateLimit(
   reservation: ApiKeyRateLimitReservation,
   actualTotalTokens?: number | null
 ): Promise<void> {
-  if (!reservation.reservationId || !reservation.hasTpmLimit) {
+  if (!reservation.reservationId) {
     return;
   }
 
@@ -168,23 +201,49 @@ export async function settleApiKeyRateLimit(
     () => {
       const now = Date.now();
       pruneExpired(state, now);
-
-      const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
-      if (!record) return;
-      record.tokens = normalizedActualTokens;
+      if (reservation.hasTpmLimit) {
+        const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+        if (record) record.tokens = normalizedActualTokens;
+      }
+      const daily = state.dailyTokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+      if (daily) daily.tokens = normalizedActualTokens;
     },
     () => {
       const now = Date.now();
       pruneExpired(state, now);
-
-      const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
-      if (!record) return;
-      record.tokens = normalizedActualTokens;
+      if (reservation.hasTpmLimit) {
+        const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+        if (record) record.tokens = normalizedActualTokens;
+      }
+      const daily = state.dailyTokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+      if (daily) daily.tokens = normalizedActualTokens;
     }
   );
 
   state.tail = task.then(() => undefined, () => undefined);
   await task;
+}
+
+// ─── Usage Snapshot for the caching-aware selector ─────
+// Maps in-memory state to the playground `KeyUsage` shape so the
+// (tested) selector can score utilization across all limit types.
+
+import type { KeyUsage } from "@/engine/playground/types";
+
+export function getKeyUsageSnapshot(apiKeyId: string): KeyUsage | null {
+  const state = windowStateByKey.get(apiKeyId);
+  if (!state) return null;
+  const now = Date.now();
+  pruneExpired(state, now);
+  return {
+    rpm: [...state.requestTimestamps],
+    tpm: state.tokenRecords.map((r) => ({ ts: r.timestamp, tokens: r.tokens })),
+    rpd: state.dailyRequestTs.map((ts) => ({ ts })),
+    tpd: state.dailyTokenRecords.map((r) => ({ ts: r.timestamp, tokens: r.tokens })),
+    lastUsedAt: state.requestTimestamps.length ? state.requestTimestamps[state.requestTimestamps.length - 1] : null,
+    totalTokensServed: state.tokenRecords.reduce((s, r) => s + r.tokens, 0),
+    cachedTokensSaved: 0,
+  };
 }
 
 // ─── Live Snapshot (for charts + queue indicator) ──────

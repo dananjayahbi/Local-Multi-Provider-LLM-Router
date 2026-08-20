@@ -2,7 +2,6 @@
 // Executes a single-key benchmark across the three metric
 // stages (TTFT, TPS, RPM/TPM burst) with early stopping.
 
-import { decrypt } from "@/lib/encryption";
 import { getAdapter } from "../adapters";
 import { CanonicalRequest } from "../canonical";
 import { getBenchmarkConfig } from "./config";
@@ -32,7 +31,7 @@ export interface BenchmarkTarget {
   apiFormat: string;
   modelId: string;
   displayName: string;
-  secretEncrypted: string;
+  secret: string;
 }
 
 export interface BenchmarkResult {
@@ -68,7 +67,7 @@ export async function runBenchmark(
   await setKeyTesting(target.apiKeyId);
 
   try {
-    const decryptedKey = decrypt(target.secretEncrypted);
+    const decryptedKey = target.secret;
     const adapter = getAdapter(target.apiFormat);
 
     // ─── Stage 1: TTFT & single-turn latency ─────────────

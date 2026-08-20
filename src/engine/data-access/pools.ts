@@ -1,6 +1,9 @@
 // ─── Pool Data Access ──────────────────────────────────
+// Keys now belong to the POOL (pool.apiKeys), not the provider.
+// Each pool also owns a plaintext gateway key (always copyable).
 
 import { prisma } from "@/lib/prisma";
+import { generateGatewayKey } from "@/lib/gateway-key";
 
 const poolInclude = {
   poolMembers: {
@@ -8,25 +11,24 @@ const poolInclude = {
       providerModel: {
         include: {
           provider: {
-            include: {
-              apiKeys: {
-                select: {
-                  id: true,
-                  label: true,
-                  secretEncrypted: true,
-                  status: true,
-                  penaltyExpiresAt: true,
-                  penaltyLevel: true,
-                  lastUsedAt: true,
-                  suspendedReason: true,
-                  manuallyDisabled: true,
-                },
-              },
+            select: {
+              id: true,
+              name: true,
+              baseUrl: true,
+              apiFormat: true,
             },
           },
         },
       },
     },
+  },
+  apiKeys: {
+    include: {
+      provider: {
+        select: { id: true, name: true, baseUrl: true, apiFormat: true },
+      },
+    },
+    orderBy: { createdAt: "asc" as const },
   },
   _count: { select: { poolMembers: true } },
 };
@@ -36,32 +38,21 @@ export async function getAllPools() {
     include: {
       poolMembers: {
         include: {
-          providerModel: {
-            include: {
-              provider: {
-                include: {
-                  apiKeys: { select: { id: true, status: true } },
-                },
-              },
-            },
-          },
+          providerModel: { include: { provider: { select: { id: true, name: true } } } },
         },
       },
+      apiKeys: { select: { id: true, status: true } },
       _count: { select: { poolMembers: true } },
     },
     orderBy: { name: "asc" },
   });
 
   return pools.map((p) => {
-    const allKeys: { id: string; status: string }[] = [];
-    for (const member of p.poolMembers) {
-      for (const key of member.providerModel.provider.apiKeys) {
-        allKeys.push(key);
-      }
-    }
+    const allKeys = p.apiKeys;
     const healthy = allKeys.filter((k) => k.status === "ACTIVE").length;
     const total = allKeys.length;
-    return { ...p, healthyKeys: healthy, totalKeys: total };
+    const { apiKeys, ...rest } = p;
+    return { ...rest, healthyKeys: healthy, totalKeys: total };
   });
 }
 
@@ -70,6 +61,11 @@ export async function getPoolById(id: string) {
     where: { id },
     include: poolInclude,
   });
+}
+
+function newGatewayKey() {
+  const { plaintext, prefix } = generateGatewayKey();
+  return { gatewayKey: plaintext, gatewayKeyPrefix: prefix };
 }
 
 export async function createPool(
@@ -81,12 +77,14 @@ export async function createPool(
   },
   members: Array<{ providerModelId: string; priority?: number }>
 ) {
+  const gw = newGatewayKey();
   return prisma.pool.create({
     data: {
       name: data.name,
       virtualModelName: data.virtualModelName,
       description: data.description,
-      routingStrategy: data.routingStrategy ?? "ROUND_ROBIN",
+      routingStrategy: data.routingStrategy ?? "KEY_AWARE",
+      ...gw,
       poolMembers: {
         create: members.map((m) => ({
           providerModelId: m.providerModelId,
@@ -105,16 +103,27 @@ export async function createQuickPool(providerModelId: string, virtualModelName:
   });
   if (!model) throw new Error("Provider model not found");
 
+  const gw = newGatewayKey();
   return prisma.pool.create({
     data: {
       name: `Pool: ${model.provider.name} / ${model.displayName}`,
       virtualModelName,
       description: `Quick pool for ${model.provider.name} → ${model.displayName}`,
-      routingStrategy: "ROUND_ROBIN",
+      routingStrategy: "KEY_AWARE",
+      ...gw,
       poolMembers: {
         create: [{ providerModelId, priority: 0 }],
       },
     },
+    include: poolInclude,
+  });
+}
+
+export async function regeneratePoolGatewayKey(id: string) {
+  const gw = newGatewayKey();
+  return prisma.pool.update({
+    where: { id },
+    data: gw,
     include: poolInclude,
   });
 }
@@ -126,6 +135,8 @@ export async function updatePool(
     virtualModelName?: string;
     description?: string;
     routingStrategy?: string;
+    cacheAware?: boolean;
+    stickyContextTokenBudget?: number;
   },
   members?: Array<{ providerModelId: string; priority?: number }>
 ) {
@@ -148,6 +159,10 @@ export async function updatePool(
       ...(data.virtualModelName !== undefined && { virtualModelName: data.virtualModelName }),
       ...(data.description !== undefined && { description: data.description }),
       ...(data.routingStrategy !== undefined && { routingStrategy: data.routingStrategy }),
+      ...(data.cacheAware !== undefined && { cacheAware: data.cacheAware }),
+      ...(data.stickyContextTokenBudget !== undefined && {
+        stickyContextTokenBudget: data.stickyContextTokenBudget,
+      }),
     },
     include: poolInclude,
   });

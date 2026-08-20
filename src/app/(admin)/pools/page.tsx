@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CopyButton } from "@/components/pools/copy-button";
 import {
   Plus,
   Layers,
@@ -31,6 +32,8 @@ import {
   GripVertical,
   ArrowUp,
   ArrowDown,
+  KeyRound,
+  RefreshCw,
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────
@@ -40,6 +43,8 @@ interface PoolItem {
   name: string;
   virtualModelName: string;
   routingStrategy: string;
+  gatewayKey: string;
+  gatewayKeyPrefix: string;
   _count: { poolMembers: number };
   healthyKeys: number;
   totalKeys: number;
@@ -93,6 +98,7 @@ export default function PoolsPage() {
   const [allProviders, setAllProviders] = useState<ProviderOption[]>([]);
   const [providerModels, setProviderModels] = useState<Record<string, ModelOption[]>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
 
   function newMember(priority: number): MemberRow {
     return { tempId: Date.now() + Math.random(), providerId: "", providerModelId: "", priority };
@@ -142,6 +148,17 @@ export default function PoolsPage() {
   }, [loadPools]);
 
   // ─── Handlers ─────────────────────────────────────────
+
+  const handleRegenerate = async (poolId: string) => {
+    setRegeneratingId(poolId);
+    const res = await fetch(`/api/admin/pools/${poolId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "regenerate-key" }),
+    });
+    setRegeneratingId(null);
+    if (res.ok) loadPools();
+  };
 
   const resetForms = () => {
     setQuickForm({ providerModelId: "", virtualModelName: "" });
@@ -525,6 +542,23 @@ export default function PoolsPage() {
                     <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{p.virtualModelName}</code>
                   </div>
                   <Badge variant="outline">{p._count.poolMembers === 1 ? "Simple" : "Unified"}</Badge>
+                </div>
+                <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-2 py-1 mb-3">
+                  <KeyRound className="h-3 w-3 text-muted-foreground shrink-0" />
+                  <code className="flex-1 break-all font-mono text-xs">{p.gatewayKey}</code>
+                  <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                    <CopyButton value={p.gatewayKey} className="h-6 w-6 shrink-0" />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 shrink-0"
+                      title="Regenerate gateway key"
+                      disabled={regeneratingId === p.id}
+                      onClick={() => handleRegenerate(p.id)}
+                    >
+                      <RefreshCw className={`h-3 w-3 ${regeneratingId === p.id ? "animate-spin" : ""}`} />
+                    </Button>
+                  </div>
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <div className="flex items-center gap-2">

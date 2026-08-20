@@ -139,7 +139,7 @@ export async function buildBenchmarkTargets(): Promise<BenchmarkTarget[]> {
       apiFormat: k.provider.apiFormat,
       modelId: k.provider.providerModels[0].modelId,
       displayName: k.provider.providerModels[0].displayName,
-      secretEncrypted: k.secretEncrypted,
+      secret: k.secret ?? "",
     }));
 }
 

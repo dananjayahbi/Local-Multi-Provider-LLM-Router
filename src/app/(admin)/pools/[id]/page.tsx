@@ -21,12 +21,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PoolGatewayKey } from "@/components/pools/pool-gateway-key";
+import { PoolKeysEditor, type ApiKey } from "@/components/pools/pool-keys-editor";
+import { AddKeyDialog } from "@/components/pools/add-key-dialog";
 import {
   ArrowLeft,
-  CircleCheck,
-  AlertTriangle,
-  Ban,
-  CircleMinus,
   Trash2,
   GripVertical,
   Pencil,
@@ -36,15 +35,6 @@ import {
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────
-
-interface KeyInfo {
-  id: string;
-  label: string;
-  status: string;
-  penaltyLevel: number;
-  penaltyExpiresAt: string | null;
-  suspendedReason: string | null;
-}
 
 interface PoolMemberItem {
   id: string;
@@ -56,7 +46,6 @@ interface PoolMemberItem {
     provider: {
       id: string;
       name: string;
-      apiKeys: KeyInfo[];
     };
   };
 }
@@ -67,7 +56,12 @@ interface PoolDetail {
   virtualModelName: string;
   description: string | null;
   routingStrategy: string;
+  cacheAware: boolean;
+  stickyContextTokenBudget: number;
+  gatewayKey: string;
+  gatewayKeyPrefix: string;
   poolMembers: PoolMemberItem[];
+  apiKeys: ApiKey[];
 }
 
 interface ProviderOption { id: string; name: string }
@@ -79,15 +73,6 @@ interface EditMemberRow {
   providerModelId: string;
   priority: number;
   existingMemberId?: string;
-}
-
-// ─── Key Status Icon ────────────────────────────────────
-
-function KeyStatusIcon({ status }: KeyInfo) {
-  if (status === "ACTIVE") return <CircleCheck className="h-4 w-4 text-green-500" />;
-  if (status === "PENALIZED") return <AlertTriangle className="h-4 w-4 text-yellow-500" />;
-  if (status === "SUSPENDED") return <Ban className="h-4 w-4 text-red-500" />;
-  return <CircleMinus className="h-4 w-4 text-gray-400" />;
 }
 
 function newEditMember(priority: number): EditMemberRow {
@@ -103,6 +88,7 @@ export default function PoolDetailPage() {
 
   const [pool, setPool] = useState<PoolDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
 
   // Edit state
   const [editOpen, setEditOpen] = useState(false);
@@ -110,6 +96,8 @@ export default function PoolDetailPage() {
   const [editVirtualName, setEditVirtualName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editStrategy, setEditStrategy] = useState("ROUND_ROBIN");
+  const [editCacheAware, setEditCacheAware] = useState(true);
+  const [editStickyBudget, setEditStickyBudget] = useState("0");
   const [editMembers, setEditMembers] = useState<EditMemberRow[]>([]);
   const [allProviders, setAllProviders] = useState<ProviderOption[]>([]);
   const [providerModels, setProviderModels] = useState<Record<string, ModelOption[]>>({});
@@ -154,6 +142,8 @@ export default function PoolDetailPage() {
       setEditVirtualName(pool.virtualModelName);
       setEditDescription(pool.description || "");
       setEditStrategy(pool.routingStrategy);
+      setEditCacheAware(pool.cacheAware);
+      setEditStickyBudget(String(pool.stickyContextTokenBudget ?? 0));
       setEditMembers(
         pool.poolMembers.map((m, i) => ({
           tempId: Date.now() + i,
@@ -170,6 +160,17 @@ export default function PoolDetailPage() {
     if (!confirm("Delete this pool? This cannot be undone.")) return;
     await fetch(`/api/admin/pools/${id}`, { method: "DELETE" });
     router.push("/pools");
+  };
+
+  const handleRegenerateKey = async () => {
+    setRegenerating(true);
+    const res = await fetch(`/api/admin/pools/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "regenerate-key" }),
+    });
+    setRegenerating(false);
+    if (res.ok) loadPool();
   };
 
   // ─── Edit members helpers ─────────────────────────────
@@ -219,6 +220,8 @@ export default function PoolDetailPage() {
         virtualModelName: editVirtualName,
         description: editDescription || undefined,
         routingStrategy: editStrategy,
+        cacheAware: editCacheAware,
+        stickyContextTokenBudget: parseInt(editStickyBudget, 10) || 0,
         members: validMembers.map((m) => ({
           providerModelId: m.providerModelId,
           priority: editStrategy === "PRIORITY" ? m.priority : 0,
@@ -238,20 +241,11 @@ export default function PoolDetailPage() {
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
   if (!pool) return <div className="text-muted-foreground">Pool not found.</div>;
 
-  const allKeys = pool.poolMembers.flatMap((m) =>
-    m.providerModel.provider.apiKeys.map((k) => ({
-      ...k,
-      memberId: m.id,
-      memberDisplay: `${m.providerModel.provider.name} / ${m.providerModel.displayName}`,
-      modelId: m.providerModel.modelId,
-      modelDbId: m.providerModel.id,
-    }))
-  );
-
-  const healthyCount = allKeys.filter((k) => k.status === "ACTIVE").length;
-  const penalizedCount = allKeys.filter((k) => k.status === "PENALIZED").length;
-  const suspendedCount = allKeys.filter((k) => k.status === "SUSPENDED").length;
-  const disabledCount = allKeys.filter((k) => k.status === "DISABLED").length;
+  const apiKeys = pool.apiKeys || [];
+  const healthyCount = apiKeys.filter((k) => k.status === "ACTIVE").length;
+  const penalizedCount = apiKeys.filter((k) => k.status === "PENALIZED").length;
+  const suspendedCount = apiKeys.filter((k) => k.status === "SUSPENDED").length;
+  const disabledCount = apiKeys.filter((k) => k.status === "DISABLED").length;
 
   return (
     <div className="space-y-6">
@@ -265,7 +259,10 @@ export default function PoolDetailPage() {
           <p className="text-muted-foreground text-sm">
             Virtual model: <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{pool.virtualModelName}</code>
             {" • "}
-            <Badge variant="outline">{pool.routingStrategy === "ROUND_ROBIN" ? "Round Robin" : "Priority"}</Badge>
+            <Badge variant="outline">{pool.routingStrategy === "ROUND_ROBIN" ? "Round Robin" : pool.routingStrategy === "PRIORITY" ? "Priority" : "Key Aware"}</Badge>
+            {pool.cacheAware && (
+              <Badge variant="outline" className="ml-1">Cache Aware</Badge>
+            )}
           </p>
         </div>
 
@@ -306,8 +303,31 @@ export default function PoolDetailPage() {
                   <SelectContent>
                     <SelectItem value="ROUND_ROBIN">Round Robin</SelectItem>
                     <SelectItem value="PRIORITY">Priority</SelectItem>
+                    <SelectItem value="KEY_AWARE">Key Aware</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Cache + sticky context */}
+              <div className="grid grid-cols-2 gap-4">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editCacheAware}
+                    onChange={(e) => setEditCacheAware(e.target.checked)}
+                  />
+                  Cache Aware
+                </label>
+                <div className="space-y-2">
+                  <Label>Sticky Context Token Budget</Label>
+                  <Input
+                    value={editStickyBudget}
+                    onChange={(e) => setEditStickyBudget(e.target.value)}
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                  />
+                </div>
               </div>
 
               {/* Members */}
@@ -383,8 +403,23 @@ export default function PoolDetailPage() {
         <Card><CardContent className="pt-6 text-center"><div className="text-2xl font-bold text-gray-400">{disabledCount}</div><p className="text-xs text-muted-foreground">Disabled</p></CardContent></Card>
       </div>
 
-      {/* ─── Members & Keys ─── */}
-      <h2 className="text-lg font-semibold">Members & Keys</h2>
+      {/* ─── Gateway Key ─── */}
+      <PoolGatewayKey
+        gatewayKey={pool.gatewayKey}
+        gatewayKeyPrefix={pool.gatewayKeyPrefix}
+        onRegenerate={handleRegenerateKey}
+        regenerating={regenerating}
+      />
+
+      {/* ─── Pool Keys (top-level) ─── */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Pool Keys</h2>
+        <AddKeyDialog poolId={pool.id} onCreated={loadPool} />
+      </div>
+      <PoolKeysEditor apiKeys={apiKeys} onChanged={loadPool} />
+
+      {/* ─── Members ─── */}
+      <h2 className="text-lg font-semibold">Members</h2>
       <div className="space-y-4">
         {pool.poolMembers.map((member) => (
           <Card key={member.id}>
@@ -398,22 +433,8 @@ export default function PoolDetailPage() {
                 {member.priority > 0 && <Badge variant="outline" className="ml-2">Priority {member.priority}</Badge>}
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-1">
-                {member.providerModel.provider.apiKeys.map((key) => (
-                  <div key={key.id} className="flex items-center justify-between rounded border px-3 py-1.5 text-sm">
-                    <div className="flex items-center gap-2">
-                      <KeyStatusIcon {...key} />
-                      <span className="font-medium">{key.label}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {key.status === "PENALIZED" && key.penaltyExpiresAt
-                        ? `Lv.${key.penaltyLevel} · ${new Date(key.penaltyExpiresAt).toLocaleTimeString()}`
-                        : key.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
+            <CardContent className="text-sm text-muted-foreground">
+              Provider keys for this member are managed in the Pool Keys section above.
             </CardContent>
           </Card>
         ))}

@@ -2,9 +2,17 @@ export type ParsedRateLimitValue = number | null | undefined;
 
 type ParseMode = "create" | "update";
 
+export type RateLimitFieldName =
+  | "rpmLimit"
+  | "tpmLimit"
+  | "rpdLimit"
+  | "tpdLimit"
+  | "contextWindow";
+
 interface ParseRateLimitOptions {
   mode: ParseMode;
-  fieldName: "rpmLimit" | "tpmLimit";
+  fieldName: RateLimitFieldName;
+  allowFloat?: boolean; // for tps (tokens/sec)
 }
 
 interface ParseRateLimitResult {
@@ -21,7 +29,7 @@ export function parseRateLimitInput(
   rawValue: unknown,
   options: ParseRateLimitOptions
 ): ParseRateLimitResult {
-  const { mode, fieldName } = options;
+  const { mode, fieldName, allowFloat } = options;
 
   if (rawValue === undefined) {
     return { value: mode === "create" ? null : undefined };
@@ -37,19 +45,24 @@ export function parseRateLimitInput(
     }
 
     const parsed = Number(rawValue);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      return { error: `${fieldName} must be a positive integer or unlimited` , value: undefined };
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return { error: `${fieldName} must be positive or unlimited`, value: undefined };
     }
-
+    if (!allowFloat && !Number.isInteger(parsed)) {
+      return { error: `${fieldName} must be a positive integer or unlimited`, value: undefined };
+    }
     return { value: parsed };
   }
 
   if (typeof rawValue === "number") {
-    if (!Number.isInteger(rawValue) || rawValue <= 0) {
+    if (!Number.isFinite(rawValue) || rawValue <= 0) {
+      return { error: `${fieldName} must be positive or unlimited`, value: undefined };
+    }
+    if (!allowFloat && !Number.isInteger(rawValue)) {
       return { error: `${fieldName} must be a positive integer or unlimited`, value: undefined };
     }
     return { value: rawValue };
   }
 
-  return { error: `${fieldName} must be a positive integer or unlimited`, value: undefined };
+  return { error: `${fieldName} must be positive or unlimited`, value: undefined };
 }

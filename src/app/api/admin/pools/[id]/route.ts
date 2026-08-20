@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPoolById, updatePool, deletePool } from "@/engine/data-access/pools";
+import {
+  getPoolById,
+  updatePool,
+  deletePool,
+  regeneratePoolGatewayKey,
+} from "@/engine/data-access/pools";
 
 export async function GET(
   _request: NextRequest,
@@ -15,6 +20,24 @@ export async function GET(
   }
 }
 
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const body = await request.json();
+    const { action } = body;
+    if (action === "regenerate-key") {
+      const pool = await regeneratePoolGatewayKey(id);
+      return NextResponse.json({ pool });
+    }
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -22,10 +45,13 @@ export async function PUT(
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, virtualModelName, description, routingStrategy, members } = body;
+    const {
+      name, virtualModelName, description, routingStrategy,
+      cacheAware, stickyContextTokenBudget, members,
+    } = body;
     const pool = await updatePool(
       id,
-      { name, virtualModelName, description, routingStrategy },
+      { name, virtualModelName, description, routingStrategy, cacheAware, stickyContextTokenBudget },
       members
     );
     return NextResponse.json(pool);

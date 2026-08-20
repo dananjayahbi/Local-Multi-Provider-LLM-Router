@@ -26,20 +26,20 @@ import {
 } from "./rate-limit/api-key-rate-limiter";
 import { estimateTokensForRateLimit } from "./rate-limit/token-estimator";
 import { normalizeCanonicalResponse } from "./response-normalizer";
+import {
+  orderCandidates,
+  OrderedCandidate,
+  RouteCandidate,
+} from "./routing/selector";
+import {
+  getConversationState,
+  setConversationKey,
+  setPendingInjection,
+} from "./routing/conversation";
 
 // ─── Types ──────────────────────────────────────────────
 
-interface CandidateKey {
-  apiKeyId: string;
-  apiKeyLabel: string;
-  secretEncrypted: string;
-  status: string;
-  penaltyLevel: number;
-  penaltyExpiresAt: Date | null;
-  lastUsedAt: Date | null;
-  rpmLimit: number | null;
-  tpmLimit: number | null;
-}
+export type CandidateKey = RouteCandidate;
 
 interface CandidateMember {
   memberId: string;
@@ -58,6 +58,8 @@ export interface ResolvedPool {
   id: string;
   name: string;
   routingStrategy: string;
+  cacheAware: boolean;
+  stickyContextTokenBudget: number;
   members: CandidateMember[];
 }
 
@@ -85,48 +87,23 @@ interface Candidate {
   member: CandidateMember;
 }
 
-function buildCandidates(pool: ResolvedPool): { tier1: Candidate[]; tier2: Candidate[] } {
+function isRoutableStatus(status: string): boolean {
+  return status !== "DISABLED" && status !== "SUSPENDED" && status !== "TESTING" && status !== "COOLDOWN";
+}
 
+/**
+ * Build the full candidate list from a pool. Keys come from the pool's
+ * own `apiKeys` (already filtered by provider in the gateway route).
+ */
+function buildCandidates(pool: ResolvedPool): Candidate[] {
   const allCandidates: Candidate[] = [];
-
   for (const member of pool.members) {
     for (const key of member.keys) {
-      // Exclude keys that are disabled, suspended, or locked
-      // for benchmarking (TESTING / COOLDOWN).
-      if (
-        key.status === "DISABLED" ||
-        key.status === "SUSPENDED" ||
-        key.status === "TESTING" ||
-        key.status === "COOLDOWN"
-      ) {
-        continue;
-      }
+      if (!isRoutableStatus(key.status)) continue;
       allCandidates.push({ key, member });
     }
   }
-
-  const tier1 = allCandidates.filter((c) => c.key.status === "ACTIVE");
-  const tier2 = allCandidates.filter((c) => c.key.status === "PENALIZED");
-
-  // Order Tier 1 by strategy
-  if (pool.routingStrategy === "PRIORITY") {
-    tier1.sort((a, b) => {
-      if (a.member.priority !== b.member.priority) return a.member.priority - b.member.priority;
-      return (a.key.lastUsedAt?.getTime() ?? 0) - (b.key.lastUsedAt?.getTime() ?? 0);
-    });
-  } else {
-    // ROUND_ROBIN: least-recently-used first
-    tier1.sort((a, b) => (a.key.lastUsedAt?.getTime() ?? 0) - (b.key.lastUsedAt?.getTime() ?? 0));
-  }
-
-  // Order Tier 2 by penaltyExpiresAt ascending
-  tier2.sort(
-    (a, b) =>
-      (a.key.penaltyExpiresAt?.getTime() ?? Infinity) -
-      (b.key.penaltyExpiresAt?.getTime() ?? Infinity)
-  );
-
-  return { tier1, tier2 };
+  return allCandidates;
 }
 
 // ─── Main Orchestrator ──────────────────────────────────
@@ -139,8 +116,7 @@ export async function orchestrate(
   await checkAndRecoverExpiredPenalties();
   await checkAndRecoverExpiredCooldowns();
 
-  const { tier1, tier2 } = buildCandidates(resolvedPool);
-  const allCandidates = [...tier1, ...tier2];
+  const allCandidates = buildCandidates(resolvedPool);
   const errors: AttemptError[] = [];
 
   if (allCandidates.length === 0) {
@@ -160,7 +136,54 @@ export async function orchestrate(
     };
   }
 
-  for (const candidate of allCandidates) {
+  // ── Caching-aware ordering ────────────────────────────
+  // Use conversation affinity (current key per pool) + per-key usage from
+  // the rate limiter to order candidates by cache-stickiness, exhaustability,
+  // context-fit and rotation-cost (design doc 06 §4).
+  const conv = getConversationState(resolvedPool.id);
+  const spec = {
+    promptTokens: estimateTokensForRateLimit(canonicalRequest),
+    completionBudget: canonicalRequest.max_tokens ?? 1024,
+  };
+  const { ordered } = orderCandidates(
+    allCandidates.map((c) => c.key),
+    spec,
+    resolvedPool.cacheAware ? conv.currentKeyId : null,
+    resolvedPool.cacheAware ? conv.lastPromptTokens : 0,
+    {
+      stickyBudgetTokens: resolvedPool.stickyContextTokenBudget ?? 0,
+      allowPenalized: true,
+      cacheAware: resolvedPool.cacheAware,
+    }
+  );
+
+  // Preserve the member mapping for the ordered candidates.
+  const memberById = new Map(allCandidates.map((c) => [c.key.apiKeyId, c.member]));
+  const orderedCandidates: Candidate[] = ordered
+    .filter((o) => memberById.has(o.candidate.apiKeyId))
+    .map((o) => ({ key: o.candidate, member: memberById.get(o.candidate.apiKeyId)! }));
+
+  if (orderedCandidates.length === 0) {
+    return {
+      success: false,
+      errors: [
+        {
+          apiKeyId: "",
+          apiKeyLabel: "",
+          providerName: "",
+          modelName: "",
+          classification: "UNKNOWN",
+          httpStatus: 0,
+          message: "No candidate key can serve this request (limits/context).",
+        },
+      ],
+    };
+  }
+
+  const prevKeyId = conv.currentKeyId;
+  const lastPromptBefore = conv.lastPromptTokens;
+
+  for (const candidate of orderedCandidates) {
     const { key, member } = candidate;
     const tierLabel = key.status === "PENALIZED" ? "TIER_2" : "TIER_1";
     const startTime = Date.now();
@@ -173,6 +196,7 @@ export async function orchestrate(
         reservationId: "",
         reservedTokens: estimatedTokens,
         hasTpmLimit: false,
+        requestTs: 0,
       };
 
       const hasLimits = Boolean(
@@ -188,8 +212,9 @@ export async function orchestrate(
         });
       }
 
-      // Decrypt the key
-      const decryptedKey = decrypt(key.secretEncrypted);
+      // Resolve the plaintext key (local) with legacy-decrypt fallback.
+      const decryptedKey =
+        key.secret || (key.secretEncrypted ? decrypt(key.secretEncrypted) : "");
 
       // Get adapter and build request
       const adapter = getAdapter(member.apiFormat);
@@ -259,6 +284,25 @@ export async function orchestrate(
 
       // Success!
       await resetKeyHealth(key.apiKeyId);
+
+      // ── Conversation affinity (cache stickiness) ─────
+      // Remember this key as the conversation's current key so the next
+      // request for this pool prefers it (provider prompt-cache discount).
+      if (resolvedPool.cacheAware) {
+        setConversationKey(resolvedPool.id, key.apiKeyId, spec.promptTokens);
+      }
+      // If we rotated away from a previous key, the chat context is now
+      // uncached on the new key — ask the user (Copilot injection) whether
+      // to switch directly or compact the chat (design doc 06 §5).
+      if (prevKeyId && prevKeyId !== key.apiKeyId) {
+        setPendingInjection(resolvedPool.id, {
+          keyLabel: key.apiKeyLabel,
+          limitName: "TPD",
+          nextKeyLabel: null,
+          promptTokens: spec.promptTokens,
+          lastPromptTokens: lastPromptBefore,
+        });
+      }
 
       if (canonicalRequest.stream) {
         // Return stream as async generator
