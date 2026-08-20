@@ -20,6 +20,7 @@ import {
   setKeyCooldown,
   setKeyActive,
   applyFailure,
+  markKeyCalibrated,
 } from "../health-engine";
 import { prisma } from "@/lib/prisma";
 
@@ -188,6 +189,8 @@ export async function runBenchmark(
         errorClassification: "RATE_LIMITED",
       });
     } else if (passed) {
+      // Mark the key as calibrated so it's easy to identify later.
+      await markKeyCalibrated(target.apiKeyId);
       await setKeyCooldown(target.apiKeyId, config.postTestCooldownSeconds);
     } else {
       await setKeyCooldown(target.apiKeyId, config.postTestCooldownSeconds);

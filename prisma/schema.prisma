@@ -35,6 +35,8 @@ model ApiKey {
   lastPenaltyEndedAt DateTime?
   suspendedReason   String?
   consecutiveFailures Int     @default(0)
+  calibrated        Boolean   @default(false) // true once a benchmark passed & configs were tuned
+  lastCalibratedAt  DateTime?
   lastUsedAt        DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -162,4 +164,37 @@ model DraftProvider {
   notes            String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+}
+
+// ─── Discovery Request ─────────────────────────────────
+// A user-triggered research session. The Hermes agent polls
+// for PENDING requests and executes them with the optional
+// user-supplied prompt to guide exploration.
+model DiscoveryRequest {
+  id           String    @id @default(cuid())
+  prompt       String?   // optional user-injected research prompt
+  status       String    @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  resultCount  Int       @default(0)
+  error        String?
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  events DiscoveryEvent[]
+}
+
+// ─── Discovery Event ───────────────────────────────────
+// A single step in a discovery session's live conversation
+// stream. The Hermes agent appends events as it searches,
+// fetches, extracts, and stages providers so the UI can render
+// a real-time agent conversation instead of a static status.
+model DiscoveryEvent {
+  id          String   @id @default(cuid())
+  requestId   String
+  kind        String   // INFO, SEARCH, FETCH, EXTRACT, STAGE, SKIP, ERROR, DONE
+  message     String
+  detail      String?
+  createdAt   DateTime @default(now())
+
+  request DiscoveryRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 }

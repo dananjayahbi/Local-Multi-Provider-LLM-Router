@@ -1,6 +1,8 @@
-# ─── Hermes Agent Docker Compose ────────────────────────
-# Spins up the Hermes agent + MCP servers on the shared
-# bridge network with the LLM Router.
+# ─── Hermes Agent Standalone Compose ───────────────────
+# Runs the Hermes discovery agent + the internal lightweight
+# MCP server together, on the shared bridge network with the
+# LLM Router. Use this to run the agent independently of the
+# full-stack compose (e.g. `docker compose -f hermes/docker-compose.yml up`).
 
 version: "3.8"
 
@@ -9,6 +11,7 @@ networks:
     external: true
 
 services:
+  # ─── Hermes Discovery Agent ──────────────────────────
   hermes-agent:
     build:
       context: .
@@ -18,32 +21,28 @@ services:
       - llm-router-net
     environment:
       - ROUTER_ADMIN_URL=http://llm-router:4006/api/admin
-      - MCP_DDG_URL=http://mcp-duckduckgo:3000
-      - MCP_FETCH_URL=http://mcp-fetch:3000
-      - MCP_DOCS_URL=http://mcp-context7:3000
+      # All three MCP tools are served by the single internal mcp-server.
+      - MCP_DDG_URL=http://mcp-server:3000
+      - MCP_FETCH_URL=http://mcp-server:3000
+      - MCP_DOCS_URL=http://mcp-server:3000
+      # Optional: enable smart LLM-based extraction for discovery.
+      # Set these in your .env file. If HERMES_LLM_API_KEY is empty,
+      # the agent falls back to heuristic extraction.
+      - HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-https://api.openai.com/v1}
+      - HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-}
+      - HERMES_LLM_MODEL=${HERMES_LLM_MODEL:-gpt-4o-mini}
     depends_on:
-      - mcp-duckduckgo
-      - mcp-fetch
-      - mcp-context7
+      - mcp-server
     restart: unless-stopped
 
-  mcp-duckduckgo:
-    image: mcp/duckduckgo-search:latest
-    container_name: mcp-duckduckgo
-    networks:
-      - llm-router-net
-    restart: unless-stopped
-
-  mcp-fetch:
-    image: mcp/fetch:latest
-    container_name: mcp-fetch
-    networks:
-      - llm-router-net
-    restart: unless-stopped
-
-  mcp-context7:
-    image: mcp/context7:latest
-    container_name: mcp-context7
+  # ─── Lightweight HTTP MCP Server ─────────────────────
+  # Single container exposing search / fetch_content / query_docs
+  # over HTTP (matches the Hermes agent's mcp-client.js protocol).
+  mcp-server:
+    build:
+      context: ../mcp-server
+      dockerfile: Dockerfile
+    container_name: mcp-server
     networks:
       - llm-router-net
     restart: unless-stopped

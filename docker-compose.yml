@@ -45,6 +45,12 @@ services:
       - MCP_DDG_URL=http://mcp-server:3000
       - MCP_FETCH_URL=http://mcp-server:3000
       - MCP_DOCS_URL=http://mcp-server:3000
+      # Optional: enable smart LLM-based extraction for discovery.
+      # Set these in your .env file. If HERMES_LLM_API_KEY is empty,
+      # the agent falls back to heuristic extraction.
+      - HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-https://api.openai.com/v1}
+      - HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-}
+      - HERMES_LLM_MODEL=${HERMES_LLM_MODEL:-gpt-4o-mini}
     depends_on:
       - llm-router
       - mcp-server

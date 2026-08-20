@@ -16,20 +16,29 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/admin/benchmarks
- * Body: { apiKeyId?: string } — if provided, benchmarks a single key.
- *       If omitted, benchmarks all eligible keys.
+ * Body: { apiKeyId?: string, apiKeyIds?: string[] }
+ *   - apiKeyIds: benchmarks the selected keys (one or many).
+ *   - apiKeyId:  benchmarks a single key (backward compat).
+ *   - omitted:   benchmarks all eligible keys.
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
 
+    const selectedIds: string[] = Array.isArray(body.apiKeyIds)
+      ? body.apiKeyIds
+      : body.apiKeyId
+        ? [body.apiKeyId]
+        : [];
+
     let targets;
-    if (body.apiKeyId) {
+    if (selectedIds.length > 0) {
       const all = await buildBenchmarkTargets();
-      targets = all.filter((t) => t.apiKeyId === body.apiKeyId);
+      const selected = new Set(selectedIds);
+      targets = all.filter((t) => selected.has(t.apiKeyId));
       if (targets.length === 0) {
         return NextResponse.json(
-          { error: "Key not found or not eligible for benchmarking" },
+          { error: "No selected keys found or eligible for benchmarking" },
           { status: 404 }
         );
       }

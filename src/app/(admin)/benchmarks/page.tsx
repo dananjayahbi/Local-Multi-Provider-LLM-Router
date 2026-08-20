@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Play, RefreshCw, Activity } from "lucide-react";
 import { BenchmarkStatusPanel } from "@/components/benchmarks/benchmark-status-panel";
 import { ThrottleMatrix } from "@/components/benchmarks/throttle-matrix";
+import { BenchmarkKeySelector } from "@/components/benchmarks/benchmark-key-selector";
 
 interface BenchmarkStatus {
   status: {
@@ -20,6 +21,8 @@ interface BenchmarkStatus {
     apiKeyLabel: string;
     providerName: string;
     status: string;
+    calibrated: boolean;
+    lastCalibratedAt: string | null;
     latestBenchmark: {
       ttftMs: number;
       avgTps: number;
@@ -72,6 +75,20 @@ export default function BenchmarksPage() {
     }
   };
 
+  const handleRunSelected = async (apiKeyIds: string[]) => {
+    setStarting(true);
+    try {
+      await fetch("/api/admin/benchmarks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKeyIds }),
+      });
+      await loadStatus(false);
+    } finally {
+      setStarting(false);
+    }
+  };
+
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
 
   return (
@@ -105,6 +122,12 @@ export default function BenchmarksPage() {
       )}
 
       <BenchmarkStatusPanel status={data?.status} />
+
+      <BenchmarkKeySelector
+        matrix={data?.matrix ?? []}
+        onRun={handleRunSelected}
+        running={starting || Boolean(data?.status.running)}
+      />
 
       <Card>
         <CardHeader>

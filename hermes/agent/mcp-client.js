@@ -5,7 +5,7 @@
 const MCP_SERVERS = {
   duckduckgo: {
     url: process.env.MCP_DDG_URL || "http://localhost:3000",
-    tools: ["search"],
+    tools: ["search", "curated_sources"],
   },
   fetch: {
     url: process.env.MCP_FETCH_URL || "http://localhost:3001",

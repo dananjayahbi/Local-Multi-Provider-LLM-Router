@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { CheckCircle2 } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -15,6 +16,8 @@ interface MatrixEntry {
   apiKeyLabel: string;
   providerName: string;
   status: string;
+  calibrated: boolean;
+  lastCalibratedAt: string | null;
   latestBenchmark: {
     ttftMs: number;
     avgTps: number;
@@ -44,6 +47,7 @@ export function ThrottleMatrix({ matrix, config }: { matrix: MatrixEntry[]; conf
           <TableHead>Key</TableHead>
           <TableHead>Provider</TableHead>
           <TableHead>Status</TableHead>
+          <TableHead>Calibrated</TableHead>
           <TableHead>TTFT (ms)</TableHead>
           <TableHead>TPS</TableHead>
           <TableHead>Drift Ratio</TableHead>
@@ -62,6 +66,16 @@ export function ThrottleMatrix({ matrix, config }: { matrix: MatrixEntry[]; conf
                 <Badge variant={entry.status === "ACTIVE" ? "success" : "secondary"}>
                   {entry.status}
                 </Badge>
+              </TableCell>
+              <TableCell>
+                {entry.calibrated ? (
+                  <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    <span className="text-xs">Calibrated</span>
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">—</span>
+                )}
               </TableCell>
               <TableCell>{b ? b.ttftMs : "—"}</TableCell>
               <TableCell>{b ? b.avgTps.toFixed(1) : "—"}</TableCell>

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { RefreshCw, Plus } from "lucide-react";
 import { DraftBoard } from "@/components/discovery/draft-board";
 import { CreateDraftDialog } from "@/components/discovery/create-draft-dialog";
+import { ResearchTrigger } from "@/components/discovery/research-trigger";
 
 interface Draft {
   id: string;
@@ -63,6 +64,8 @@ export default function DiscoveryPage() {
           </Button>
         </div>
       </div>
+
+      <ResearchTrigger onTriggered={loadDrafts} />
 
       <DraftBoard drafts={drafts} onChanged={loadDrafts} />
 

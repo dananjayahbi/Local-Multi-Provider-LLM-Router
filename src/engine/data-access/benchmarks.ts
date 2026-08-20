@@ -60,6 +60,8 @@ export async function getThrottleMatrix() {
     apiKeyLabel: key.label,
     providerName: key.provider.name,
     status: key.status,
+    calibrated: key.calibrated,
+    lastCalibratedAt: key.lastCalibratedAt,
     latestBenchmark: key.benchmarks[0] ?? null,
   }));
 }

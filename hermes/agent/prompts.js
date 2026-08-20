@@ -3,11 +3,11 @@
 // sources for free/low-cost LLM endpoints.
 
 const SEARCH_QUERIES = [
-  "Free OpenAI compatible API endpoints",
-  "Hosted LLM providers API keys documentation",
-  "DeepSeek API alternative providers",
-  "Free LLM API endpoints list github",
-  "OpenAI compatible API free tier providers",
+  "free OpenAI compatible API endpoints list github",
+  "free LLM API providers list github awesome",
+  "OpenAI compatible API free tier providers documentation",
+  "DeepSeek API alternative providers free",
+  "free LLM API base URL /v1 chat completions providers",
 ];
 
 const EXTRACTION_PROMPT = `

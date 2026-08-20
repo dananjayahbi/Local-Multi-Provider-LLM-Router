@@ -140,49 +140,53 @@ Once started, open your browser to **http://localhost:4006** — you'll see the 
 
 ## 7. (Optional) Set Up the Hermes Discovery Agent in Docker
 
-The Hermes agent automatically searches the web for free/cheap LLM endpoints and stages them as "drafts" for you to review. It runs in Docker alongside three MCP servers.
+The Hermes agent automatically searches the web for free/cheap LLM endpoints and stages them as "drafts" for you to review. It runs in Docker alongside the MCP server (web search, page fetching, documentation lookup).
 
 ### 7.1 Start Docker Desktop
 Make sure Docker Desktop is running (the whale icon in your system tray should be active).
 
-### 7.2 Create the shared Docker network
-The agent and the router must be on the same network. Run:
+### 7.2 Run the full stack (router + agent + MCP server)
+
+The project now has a **root `docker-compose.yml`** that runs everything together on a shared network. From the project root, run:
 
 ```bash
-docker network create llm-router-net
+docker compose up -d --build
 ```
 
-### 7.3 Run the router in Docker (required for the agent to reach it)
-
-> **Important**: The Hermes agent reaches the router at `http://llm-router:4006`. This only works if the **router itself is also running in Docker** with the container name `llm-router`. If you run the router with `npm start` on your host, the agent cannot reach it.
-
-The project currently has a `hermes/docker-compose.yml` for the agent + MCP servers, but **the router itself is not yet containerized**. To run everything together, you have two options:
-
-**Option A — Run the router on the host, agent in Docker (simplest, but agent can't auto-reach it):**
-- Start the router with `npm start` (Section 6).
-- Run the agent with `docker compose -f hermes/docker-compose.yml up --build`.
-- The agent will try to reach `http://llm-router:4006` and fail unless you change `ROUTER_ADMIN_URL` in `hermes/docker-compose.yml` to `http://host.docker.internal:4006/api/admin` (Windows/Mac Docker supports `host.docker.internal`).
-
-**Option B — Containerize the router too (recommended for full auto-discovery):**
-1. Create a `Dockerfile` in the project root that builds the Next.js app.
-2. Add the router as a service named `llm-router` in `hermes/docker-compose.yml` on the `llm-router-net` network.
-3. Run `docker compose -f hermes/docker-compose.yml up --build`.
-
-> This is a known enhancement. For now, if you just want to try the discovery feature quickly, use **Option A** with the `host.docker.internal` URL change.
-
-### 7.4 Build and start the agent
-```bash
-cd hermes
-docker compose up --build
-```
-
-This starts:
+This starts three containers:
+- `llm-router` — the Next.js router (port 4006)
 - `hermes-agent` — the discovery agent
-- `mcp-duckduckgo` — web search
-- `mcp-fetch` — web page fetching
-- `mcp-context7` — documentation lookup
+- `mcp-server` — web search / fetch / docs lookup
 
-The agent runs a discovery session on startup, then every 6 hours. Discovered endpoints appear as **drafts** in the Discovery page (Section 8.4).
+The agent reaches the router at `http://llm-router:4006` automatically (both are on the same Docker network).
+
+### 7.3 (Optional) Enable smart LLM-based extraction
+
+By default, the agent uses a **heuristic parser** to extract provider details from web pages. To make extraction much smarter, set your own working API key in the `.env` file:
+
+```env
+HERMES_LLM_BASE_URL=https://api.openai.com/v1
+HERMES_LLM_API_KEY=your-working-api-key-here
+HERMES_LLM_MODEL=gpt-4o-mini
+```
+
+Then restart the agent:
+
+```bash
+docker compose up -d --build hermes-agent
+```
+
+With this set, the agent uses your key to call an OpenAI-compatible chat-completions endpoint to intelligently parse web content into structured provider records. If left empty, it falls back to the heuristic parser.
+
+### 7.4 Trigger research from the Discovery page
+
+You no longer need to wait for the scheduled run. On the **Discovery** page (`http://localhost:4006/discovery`), use the **"Run Research Session"** card:
+
+1. (Optional) Type a research prompt to guide the agent, e.g. *"Focus on free DeepSeek-compatible endpoints with generous free tiers."*
+2. Click **Start Research**.
+3. The agent picks up the request automatically and stages new drafts.
+
+The agent also runs a discovery session on startup and every 6 hours. Discovered endpoints appear as **drafts** in the Discovery page (Section 8.4).
 
 ---
 

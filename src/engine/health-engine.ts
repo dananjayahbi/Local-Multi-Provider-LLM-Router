@@ -234,6 +234,21 @@ export async function setKeyActive(apiKeyId: string): Promise<void> {
 }
 
 /**
+ * Marks a key as calibrated after a successful benchmark run.
+ * This lets users easily identify keys whose configs have been
+ * validated and tuned.
+ */
+export async function markKeyCalibrated(apiKeyId: string): Promise<void> {
+  await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: {
+      calibrated: true,
+      lastCalibratedAt: new Date(),
+    },
+  });
+}
+
+/**
  * Recovers keys that finished their COOLDOWN period back to ACTIVE.
  * Called at the start of orchestration and by the scheduler.
  */
