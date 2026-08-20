@@ -16,10 +16,12 @@ import {
   Terminal,
   FlaskConical,
   Boxes,
+  MessageSquare,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/providers", label: "Providers", icon: Server },
   { href: "/models", label: "Models", icon: Boxes },
   { href: "/pools", label: "Pools", icon: Layers },

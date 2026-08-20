@@ -61,6 +61,11 @@ export interface ResolvedPool {
   cacheAware: boolean;
   stickyContextTokenBudget: number;
   members: CandidateMember[];
+  /** Override the `poolId` written to RequestLog rows. The gateway always sets
+   *  this to a real pool id. Ad-hoc single-model calls (e.g. the admin Chat
+   *  page) that build a synthetic pool pass `null` so usage is still recorded
+   *  without violating the Pool FK. */
+  logPoolId?: string | null;
 }
 
 export interface AttemptError {
@@ -115,6 +120,10 @@ export async function orchestrate(
   // Recover any expired penalties and cooldowns first
   await checkAndRecoverExpiredPenalties();
   await checkAndRecoverExpiredCooldowns();
+
+  // Synthetic pools (admin Chat) may not correspond to a real Pool row; use
+  // their override so RequestLog.poolId stays null (usage still aggregates).
+  const logPoolId = resolvedPool.logPoolId !== undefined ? resolvedPool.logPoolId : resolvedPool.id;
 
   const allCandidates = buildCandidates(resolvedPool);
   const errors: AttemptError[] = [];
@@ -253,7 +262,7 @@ export async function orchestrate(
 
         // Log failure
         await createRequestLog({
-          poolId: resolvedPool.id,
+          poolId: logPoolId,
           apiKeyId: key.apiKeyId,
           providerModelId: member.providerModelId,
           tier: tierLabel,
@@ -307,7 +316,7 @@ export async function orchestrate(
       if (canonicalRequest.stream) {
         // Return stream as async generator
         const streamGen = streamResponse(response, adapter, {
-          poolId: resolvedPool.id,
+          poolId: logPoolId,
           apiKeyId: key.apiKeyId,
           providerModelId: member.providerModelId,
           tier: tierLabel,
@@ -328,7 +337,7 @@ export async function orchestrate(
 
         // Log success
         await createRequestLog({
-          poolId: resolvedPool.id,
+          poolId: logPoolId,
           apiKeyId: key.apiKeyId,
           providerModelId: member.providerModelId,
           tier: tierLabel,
@@ -366,7 +375,7 @@ export async function orchestrate(
 
       // Log failure
       await createRequestLog({
-        poolId: resolvedPool.id,
+        poolId: logPoolId,
         apiKeyId: key.apiKeyId,
         providerModelId: member.providerModelId,
         tier: tierLabel,
@@ -401,7 +410,7 @@ async function* streamResponse(
   response: Response,
   adapter: ReturnType<typeof getAdapter>,
   meta: {
-    poolId: string;
+    poolId: string | null;
     apiKeyId: string;
     providerModelId: string;
     tier: string;

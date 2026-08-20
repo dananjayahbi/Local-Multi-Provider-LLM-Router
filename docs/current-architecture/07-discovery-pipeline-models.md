@@ -64,6 +64,14 @@ backing the single "Google" provider. This is supported everywhere:
 - **APPROVED stage:** `KeySetupForm` on the approved card adds one-or-many keys.
 - **CONFIGURED stage:** the configured card embeds the same `KeySetupForm`, so
   keys can be added/removed even after onboarding completes.
+- **Per-key limits (task):** each key row in `KeySetupForm` has an **Edit rate/
+  token limits** gear button (Settings2 icon) opening `KeyLimitsDialog` — set
+  RPM / TPM / RPD / TPD / tokens-per-sec / TTFT / context-window per key via
+  `PUT /api/admin/keys/[id]` (blank = unlimited → `null`). Because limits differ
+  per provider, these are set on the key itself.
+- **Configured-card Edit (task):** the CONFIGURED card has an **Edit** button
+  that reopens `ConfigureProviderDialog` (pre-filled from `draft.discoveredModels`)
+  so previously-added models can be added to after onboarding.
 - **Provider detail page** (`/providers/[id]`): full CRUD — add, edit label/
   limits, enable/disable, reveal, delete, plus penalty/suspend state chips.
 
@@ -81,6 +89,9 @@ want via `PoolApiKey`.
 - **Edit existing** — an `EditModelDialog` (opened via the pencil button in each
   row) lets the user change a model's ID, display name, context window, and
   capabilities even after it is listed (task: models should remain editable).
+  The form is **seeded from the model's current values** whenever it is opened
+  (a `useEffect` syncs form state to the selected `model`, since the dialog stays
+  mounted with a null model initially).
 - Pool creation already selects models from the models list (task 06).
 
 ## 4. Key management UI

@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyButton } from "@/components/pools/copy-button";
-import { KeyRound, Plus, Trash2, ShieldCheck } from "lucide-react";
+import { KeyRound, Plus, Trash2, ShieldCheck, Settings2 } from "lucide-react";
 import { ProviderApiKey } from "./discovery-types";
+import { KeyLimitsDialog } from "./key-limits-dialog";
 
 interface Props {
   providerId: string;
@@ -15,11 +16,14 @@ interface Props {
 }
 
 /** Approved-stage key configuration (task 04). Sets a PROVIDER-LEVEL API key
- *  (shared across pools — task 05). The key secret is always copyable. */
+ *  (shared across pools — task 05). The key secret is always copyable. Each
+ *  key also gets a per-key rate/token limit editor (RPM, TPM, TPD, context,
+ *  etc.) since limits differ per provider. */
 export function KeySetupForm({ providerId, keys, onChanged }: Props) {
   const [secret, setSecret] = useState("");
   const [label, setLabel] = useState("");
   const [saving, setSaving] = useState(false);
+  const [limitsKey, setLimitsKey] = useState<ProviderApiKey | null>(null);
 
   const handleAdd = async () => {
     if (!secret.trim()) return;
@@ -99,13 +103,29 @@ export function KeySetupForm({ providerId, keys, onChanged }: Props) {
                   </div>
                 )}
               </div>
-              <Button variant="ghost" size="icon" onClick={() => handleDelete(k.id)}>
-                <Trash2 className="h-4 w-4 text-destructive" />
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setLimitsKey(k)}
+                  title="Edit rate/token limits"
+                >
+                  <Settings2 className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon" onClick={() => handleDelete(k.id)}>
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
       )}
+
+      <KeyLimitsDialog
+        keyData={limitsKey}
+        onOpenChange={(open) => !open && setLimitsKey(null)}
+        onSaved={onChanged}
+      />
     </div>
   );
 }

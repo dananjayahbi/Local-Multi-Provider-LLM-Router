@@ -124,11 +124,46 @@ The `(admin)` route group provides a shared sidebar layout without affecting URL
 | Route | Icon | Label |
 |---|---|---|
 | `/dashboard` | `LayoutDashboard` | Dashboard |
+| `/chat` | `MessageSquare` | Chat |
 | `/providers` | `Server` | Providers |
+| `/models` | `Boxes` | Models |
 | `/pools` | `Layers` | Pools |
+| `/benchmarks` | `Gauge` | Benchmarks |
+| `/discovery` | `Compass` | Discovery |
+| `/terminal` | `Terminal` | Terminal |
+| `/playground` | `FlaskConical` | Playground |
 | `/usage` | `BarChart3` | Usage |
 | `/logs` | `ScrollText` | Logs |
 | `/settings` | `Settings` | Settings |
+
+---
+
+## 3.5 Chat Page
+
+**File**: `app/(admin)/chat/page.tsx` → `components/chat/chat-page.tsx`
+
+A direct-chat interface against any **configured model** (from the Models page).
+
+### Data Source
+- `GET /api/admin/models` — lists all configured `ProviderModel`s (with provider) for the model selector.
+- `POST /api/admin/chat/completions` — streams/non-streams a completion for a selected `providerModelId`.
+
+### Sub-components (`components/chat/`)
+| Component | Purpose |
+|---|---|
+| `chat-model-selector.tsx` | Dropdown of `displayName — provider.name` |
+| `chat-message-list.tsx` | Scrollable bubble list, auto-scrolls to newest |
+| `chat-message-bubble.tsx` | User / assistant / error bubble; blinking caret + spinner while streaming |
+| `chat-input.tsx` | Auto-growing textarea, Enter sends / Shift+Enter newline, Stop button |
+| `chat-types.ts` | `ChatModel`, `ChatMessage` types |
+
+### Behavior
+- Select a model → type → send → streaming SSE parsed client-side (`data:` chunks, `delta.content`).
+- **Stop** aborts via `AbortController`.
+- Usage is recorded: the backend runs the request through the same `orchestrate()` engine as the gateway, writing `RequestLog` rows, so chat activity shows up on `/usage`.
+
+### Backend
+`POST /api/admin/chat/completions` (`app/api/admin/chat/completions/route.ts`) resolves the `ProviderModel` + provider + its active keys, builds a one-member `ResolvedPool` with `logPoolId: null`, and calls `orchestrate()`. See §8 in `02-engine-architecture.md` for the `logPoolId` override.
 
 ---
 

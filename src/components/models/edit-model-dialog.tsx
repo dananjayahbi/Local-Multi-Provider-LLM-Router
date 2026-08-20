@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -20,27 +20,33 @@ interface Props {
   onSaved: () => void;
 }
 
+const EMPTY_FORM = {
+  modelId: "",
+  displayName: "",
+  supportsVision: false,
+  supportsFunctionCalling: false,
+  contextWindow: "",
+};
+
 /** Edit an existing model (Models page): change model ID, display name,
- *  context window, and capabilities after the model has been listed. */
+ *  context window, and capabilities after the model has been listed. The form
+ *  is seeded from the model's current values whenever a model is opened. */
 export function EditModelDialog({ model, onOpenChange, onSaved }: Props) {
-  const [form, setForm] = useState(() =>
-    model
-      ? {
-          modelId: model.modelId,
-          displayName: model.displayName,
-          supportsVision: model.supportsVision,
-          supportsFunctionCalling: model.supportsFunctionCalling,
-          contextWindow: model.contextWindow != null ? String(model.contextWindow) : "",
-        }
-      : {
-          modelId: "",
-          displayName: "",
-          supportsVision: false,
-          supportsFunctionCalling: false,
-          contextWindow: "",
-        }
-  );
+  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+
+  // Sync the form with the model's current values each time one is selected.
+  useEffect(() => {
+    if (model) {
+      setForm({
+        modelId: model.modelId,
+        displayName: model.displayName,
+        supportsVision: model.supportsVision,
+        supportsFunctionCalling: model.supportsFunctionCalling,
+        contextWindow: model.contextWindow != null ? String(model.contextWindow) : "",
+      });
+    }
+  }, [model]);
 
   const handleSave = async () => {
     if (!model || !form.modelId.trim()) return;

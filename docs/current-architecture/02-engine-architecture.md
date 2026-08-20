@@ -201,7 +201,14 @@ interface ResolvedPool {
   id: string;
   name: string;
   routingStrategy: string;
+  cacheAware: boolean;
+  stickyContextTokenBudget: number;
   members: CandidateMember[];
+  /** Optional override for the `poolId` written to RequestLog rows. The public
+   *  gateway leaves it unset (defaults to `resolvedPool.id`, a real Pool).
+   *  Ad-hoc single-model calls that build a synthetic pool (e.g. the admin
+   *  Chat page) pass `null` so usage is still recorded without a Pool FK. */
+  logPoolId?: string | null;
 }
 
 interface OrchestratorResult {
