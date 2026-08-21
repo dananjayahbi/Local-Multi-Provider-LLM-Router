@@ -28,9 +28,12 @@ import { estimateTokensForRateLimit } from "./rate-limit/token-estimator";
 import { normalizeCanonicalResponse } from "./response-normalizer";
 import {
   orderCandidates,
-  OrderedCandidate,
   RouteCandidate,
 } from "./routing/selector";
+import {
+  orderByStrategy,
+  isSimpleStrategy,
+} from "./routing/strategies";
 import {
   getConversationState,
   setConversationKey,
@@ -145,32 +148,49 @@ export async function orchestrate(
     };
   }
 
-  // ── Caching-aware ordering ────────────────────────────
-  // Use conversation affinity (current key per pool) + per-key usage from
-  // the rate limiter to order candidates by cache-stickiness, exhaustability,
-  // context-fit and rotation-cost (design doc 06 §4).
+  // ── Candidate ordering ────────────────────────────────
+  // Honor the pool's routing strategy:
+  //   ROUND_ROBIN / PRIORITY — simple deterministic ordering (strategies.ts).
+  //   KEY_AWARE (default)    — caching-aware selector using conversation
+  //                            affinity + live rate-limiter usage (selector.ts).
   const conv = getConversationState(resolvedPool.id);
   const spec = {
     promptTokens: estimateTokensForRateLimit(canonicalRequest),
     completionBudget: canonicalRequest.max_tokens ?? 1024,
   };
-  const { ordered } = orderCandidates(
-    allCandidates.map((c) => c.key),
-    spec,
-    resolvedPool.cacheAware ? conv.currentKeyId : null,
-    resolvedPool.cacheAware ? conv.lastPromptTokens : 0,
-    {
-      stickyBudgetTokens: resolvedPool.stickyContextTokenBudget ?? 0,
-      allowPenalized: true,
-      cacheAware: resolvedPool.cacheAware,
-    }
-  );
 
-  // Preserve the member mapping for the ordered candidates.
-  const memberById = new Map(allCandidates.map((c) => [c.key.apiKeyId, c.member]));
-  const orderedCandidates: Candidate[] = ordered
-    .filter((o) => memberById.has(o.candidate.apiKeyId))
-    .map((o) => ({ key: o.candidate, member: memberById.get(o.candidate.apiKeyId)! }));
+  let orderedCandidates: Candidate[];
+  if (isSimpleStrategy(resolvedPool.routingStrategy)) {
+    const ordered = orderByStrategy(
+      allCandidates.map((c) => ({
+        key: c.key,
+        memberPriority: c.member.priority,
+      })),
+      resolvedPool.routingStrategy as "ROUND_ROBIN" | "PRIORITY"
+    );
+    const memberById = new Map(allCandidates.map((c) => [c.key.apiKeyId, c.member]));
+    orderedCandidates = ordered
+      .filter((o) => memberById.has(o.key.apiKeyId))
+      .map((o) => ({ key: o.key, member: memberById.get(o.key.apiKeyId)! }));
+  } else {
+    const { ordered } = orderCandidates(
+      allCandidates.map((c) => c.key),
+      spec,
+      resolvedPool.cacheAware ? conv.currentKeyId : null,
+      resolvedPool.cacheAware ? conv.lastPromptTokens : 0,
+      {
+        stickyBudgetTokens: resolvedPool.stickyContextTokenBudget ?? 0,
+        allowPenalized: true,
+        cacheAware: resolvedPool.cacheAware,
+      }
+    );
+
+    // Preserve the member mapping for the ordered candidates.
+    const memberById = new Map(allCandidates.map((c) => [c.key.apiKeyId, c.member]));
+    orderedCandidates = ordered
+      .filter((o) => memberById.has(o.candidate.apiKeyId))
+      .map((o) => ({ key: o.candidate, member: memberById.get(o.candidate.apiKeyId)! }));
+  }
 
   if (orderedCandidates.length === 0) {
     return {

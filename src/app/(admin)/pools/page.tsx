@@ -93,7 +93,7 @@ export default function PoolsPage() {
   const [advName, setAdvName] = useState("");
   const [advVirtualName, setAdvVirtualName] = useState("");
   const [advDescription, setAdvDescription] = useState("");
-  const [advStrategy, setAdvStrategy] = useState("ROUND_ROBIN");
+  const [advStrategy, setAdvStrategy] = useState("KEY_AWARE");
   const [members, setMembers] = useState<MemberRow[]>([newMember(0)]);
   const [allProviders, setAllProviders] = useState<ProviderOption[]>([]);
   const [providerModels, setProviderModels] = useState<Record<string, ModelOption[]>>({});
@@ -165,7 +165,7 @@ export default function PoolsPage() {
     setAdvName("");
     setAdvVirtualName("");
     setAdvDescription("");
-    setAdvStrategy("ROUND_ROBIN");
+    setAdvStrategy("KEY_AWARE");
     setMembers([newMember(0)]);
     setMode("quick");
   };
@@ -380,14 +380,17 @@ export default function PoolsPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="KEY_AWARE">Key Aware</SelectItem>
                       <SelectItem value="ROUND_ROBIN">Round Robin</SelectItem>
                       <SelectItem value="PRIORITY">Priority</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    {advStrategy === "ROUND_ROBIN"
-                      ? "Keys are ordered least-recently-used first, spreading load evenly."
-                      : "Keys are ordered by priority (lower = tried first), then least-recently-used."}
+                    {advStrategy === "KEY_AWARE"
+                      ? "Caching-aware: keeps a chat on the same key to preserve prompt cache, balancing limits."
+                      : advStrategy === "ROUND_ROBIN"
+                        ? "Keys are ordered least-recently-used first, spreading load evenly."
+                        : "Keys are ordered by priority (lower = tried first), then least-recently-used."}
                   </p>
                 </div>
 
@@ -567,7 +570,13 @@ export default function PoolsPage() {
                     </span>
                     <span>/ {p.totalKeys} keys healthy</span>
                   </div>
-                  <Badge variant="outline">{p.routingStrategy === "ROUND_ROBIN" ? "Round Robin" : "Priority"}</Badge>
+                  <Badge variant="outline">
+                    {p.routingStrategy === "ROUND_ROBIN"
+                      ? "Round Robin"
+                      : p.routingStrategy === "PRIORITY"
+                        ? "Priority"
+                        : "Key Aware"}
+                  </Badge>
                 </div>
               </CardContent>
             </Card>

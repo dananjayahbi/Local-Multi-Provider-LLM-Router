@@ -229,10 +229,13 @@ Filters and sorts keys into two tiers:
 | **Tier 2** | `PENALIZED` keys | Tried as fallback |
 | **Skipped** | `DISABLED`, `SUSPENDED` | Never tried |
 
-**Sorting strategies**:
+**Sorting strategies** (honored by the orchestrator via `routing/strategies.ts`):
+- **`KEY_AWARE`** (default): Caching-aware selector (`routing/selector.ts`) — orders by conversation affinity (cache stickiness), exhaustability, context-fit, rotation-cost and speed.
 - **`PRIORITY`**: Sort by `member.priority` ascending (lower = higher), then `lastUsedAt` ascending (LRU tiebreaker)
 - **`ROUND_ROBIN`**: Sort purely by `lastUsedAt` ascending (LRU first)
 - **Tier 2 always**: Sorted by `penaltyExpiresAt` ascending (soonest-to-expire first)
+
+> **Note**: `routing/strategies.ts` provides `orderByStrategy()` + `isSimpleStrategy()`. The orchestrator routes `ROUND_ROBIN`/`PRIORITY` through the simple deterministic ordering and `KEY_AWARE` through the caching-aware selector. Previously the strategy was stored/displayed but never actually applied to routing — this was fixed during the pools audit.
 
 ### Main Orchestration Flow
 
