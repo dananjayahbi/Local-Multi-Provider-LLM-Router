@@ -22,6 +22,7 @@ model Provider {
 
   apiKeys        ApiKey[]
   providerModels ProviderModel[]
+  calibrationSessions CalibrationSession[]
 }
 
 // ─── API Key ────────────────────────────────────────────
@@ -68,6 +69,7 @@ model ApiKey {
   requestLogs RequestLog[]
   benchmarks  ApiKeyBenchmark[]
   poolApiKeys PoolApiKey[]
+  calibrationSessions CalibrationSession[]
 }
 
 // ─── Provider Model ─────────────────────────────────────
@@ -86,6 +88,7 @@ model ProviderModel {
   provider    Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
   poolMembers PoolMember[]
   requestLogs RequestLog[]
+  calibrationSessions CalibrationSession[]
 }
 
 // ─── Pool ───────────────────────────────────────────────
@@ -298,4 +301,52 @@ model ChatFile {
   createdAt DateTime @default(now())
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ─── Calibration Session ──────────────────────────────
+// A single calibration run scoped to ONE provider (one provider,
+// one key, one model at a time). Unlike the legacy stress-test
+// benchmark runner, the Hermes agent researches the provider's
+// published free-quota rate limits (RPM / TPM / RPD / TPD, etc.)
+// from the web WITHOUT stressing the key. The findings are shown
+// to the user, who then applies the limits to the key manually.
+model CalibrationSession {
+  id              String   @id @default(cuid())
+  providerId      String
+  apiKeyId        String
+  providerModelId String
+  status          String   @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  findings        String?  // JSON: researched free-quota rate-limit findings
+  applied         Boolean  @default(false) // true once user applies findings to the key
+  error           String?
+  createdAt       DateTime @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  provider       Provider            @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  apiKey         ApiKey              @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  providerModel  ProviderModel       @relation(fields: [providerModelId], references: [id], onDelete: Cascade)
+  events         CalibrationEvent[]
+
+  @@index([providerId])
+  @@index([apiKeyId])
+  @@index([status])
+}
+
+// ─── Calibration Event ─────────────────────────────────
+// A single step in a calibration session's live activity
+// stream. The Hermes agent appends events as it searches and
+// extracts rate-limit findings so the UI renders the research
+// in real time (mirrors DiscoveryEvent).
+model CalibrationEvent {
+  id        String   @id @default(cuid())
+  sessionId String
+  kind      String   // INFO, SEARCH, FETCH, EXTRACT, RESULT, ERROR, DONE
+  message   String
+  detail    String?
+  createdAt DateTime @default(now())
+
+  session CalibrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
 }

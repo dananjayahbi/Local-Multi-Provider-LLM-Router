@@ -7,6 +7,7 @@ const providers = require("./providers");
 const pools = require("./pools");
 const drafts = require("./drafts");
 const discovery = require("./discovery");
+const calibration = require("./calibration");
 const system = require("./system");
 
 // Top-level aliases → module.
@@ -22,6 +23,8 @@ const ROUTES = {
   requests: discovery, // discovery.requests
   keys: discovery, // discovery.keys
   key: discovery, // discovery.key
+  calibrate: calibration,
+  calibration: calibration,
   status: system,
   sys: system,
   usage: system,

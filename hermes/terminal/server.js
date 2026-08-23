@@ -15,8 +15,50 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 const session = require("./session");
+const { runCalibrationSession } = require("../agent/calibration");
 
 const PORT = Number(process.env.TERMINAL_PORT || 4007);
+const ROUTER_ADMIN_URL = process.env.ROUTER_ADMIN_URL || "http://llm-router:4006/api/admin";
+const CALIBRATION_POLL_MS = Number(process.env.CALIBRATION_POLL_MS || 5000);
+
+// ─── Calibration auto-picker ───────────────────────────
+// Polls the router for PENDING calibration sessions and runs
+// them ONE at a time (the calibration model is provider-scoped).
+// Each progress line is mirrored into the shared PTY terminal so
+// the on-page terminal shows the Hermes agent's live activity.
+// Guards against overlapping runs via the `calibrating` flag.
+
+let calibrating = false;
+
+async function processPendingCalibration() {
+  if (calibrating) return;
+  let res;
+  try {
+    res = await fetch(`${ROUTER_ADMIN_URL}/calibration/sessions?status=PENDING`);
+  } catch {
+    return;
+  }
+  if (!res.ok) return;
+  const list = await res.json();
+  const pending = Array.isArray(list) ? list.filter((s) => s.status === "PENDING") : [];
+  if (pending.length === 0) return;
+
+  calibrating = true;
+  try {
+    for (const s of pending) {
+      session.broadcast(
+        `\r\n\x1b[36m▶ Hermes calibration: ${s.provider?.name || s.providerId}\x1b[0m\r\n`
+      );
+      await runCalibrationSession(ROUTER_ADMIN_URL, s.id, (line) => {
+        session.broadcast(`${line.replace(/^\[calibrate\] /, "")}\r\n`);
+      });
+    }
+  } catch (err) {
+    session.broadcast(`\r\n\x1b[31m✖ calibration error: ${err.message}\x1b[0m\r\n`);
+  } finally {
+    calibrating = false;
+  }
+}
 
 const server = http.createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -72,4 +114,8 @@ wss.on("connection", (ws) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`[terminal] Hermes terminal server listening on ws://0.0.0.0:${PORT}/terminal`);
+  console.log(
+    `[terminal] calibration auto-picker active (poll every ${CALIBRATION_POLL_MS}ms → ${ROUTER_ADMIN_URL})`
+  );
+  setInterval(processPendingCalibration, CALIBRATION_POLL_MS);
 });

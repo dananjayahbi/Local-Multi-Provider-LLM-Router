@@ -25,7 +25,7 @@ const navItems = [
   { href: "/providers", label: "Providers", icon: Server },
   { href: "/models", label: "Models", icon: Boxes },
   { href: "/pools", label: "Pools", icon: Layers },
-  { href: "/benchmarks", label: "Benchmarks", icon: Gauge },
+  { href: "/benchmarks", label: "Calibration", icon: Gauge },
   { href: "/discovery", label: "Discovery", icon: Compass },
   { href: "/terminal", label: "Terminal", icon: Terminal },
   { href: "/playground", label: "Playground", icon: FlaskConical },

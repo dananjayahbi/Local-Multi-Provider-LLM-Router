@@ -73,6 +73,21 @@ class TerminalSession {
   }
 
   /**
+   * Inject an externally produced line (e.g. the calibration
+   * auto-picker) into the terminal stream so every attached client
+   * sees it and it is preserved in the scrollback buffer. Does NOT
+   * write to the PTY's stdin.
+   */
+  broadcast(data) {
+    this.append(data);
+    for (const client of this.clients) {
+      try {
+        client.send(data);
+      } catch {}
+    }
+  }
+
+  /**
    * Attach a client. Replays the buffer starting from `offset`
    * (the character offset the client has already seen), so both
    * fresh mounts (offset 0) and within-page reconnects (nonzero)
