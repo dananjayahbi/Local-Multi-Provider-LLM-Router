@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getKeysByProvider, createApiKey, addKeyToPool } from "@/engine/data-access/api-keys";
 import { parseRateLimitInput } from "@/lib/api-key-rate-limits";
+import { enableAutoCalibration } from "@/engine/benchmark/auto-calibration";
 
 export async function GET(
   _request: NextRequest,
@@ -27,6 +28,7 @@ export async function POST(
       rpmLimit, tpmLimit, rpdLimit, tpdLimit,
       tps, timeToFirstTokenMs, contextWindow,
       cacheCapable, cacheDiscountFactor,
+      autoCalibration,
     } = body;
 
     if (!label || !secret) {
@@ -74,12 +76,19 @@ export async function POST(
       cacheCapable: cacheCapable ?? true,
       cacheDiscountFactor:
         cacheDiscountFactor != null ? Number(cacheDiscountFactor) : 0.1,
+      autoCalibration: autoCalibration ?? false,
     });
 
     // Optionally attach this provider-level key to a pool immediately (task 05).
     if (poolId) {
       await addKeyToPool(poolId, apiKey.id);
     }
+
+    // Seed the auto-calibration baseline from the key's initial limits.
+    if (autoCalibration) {
+      await enableAutoCalibration(apiKey.id);
+    }
+
     return NextResponse.json(apiKey, { status: 201 });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

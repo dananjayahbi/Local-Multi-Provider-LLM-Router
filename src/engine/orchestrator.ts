@@ -18,6 +18,10 @@ import {
   checkAndRecoverExpiredPenalties,
   checkAndRecoverExpiredCooldowns,
 } from "./health-engine";
+import {
+  handleAutoCalibrationSuccess,
+  handleAutoCalibrationFailure,
+} from "./benchmark/auto-calibration";
 import { createRequestLog } from "./data-access/request-logs";
 import {
   waitForApiKeyRateLimit,
@@ -95,8 +99,13 @@ interface Candidate {
   member: CandidateMember;
 }
 
+// Only ACTIVE keys are routable. PENALIZED keys are in cooldown — they must
+// NOT be used until `checkAndRecoverExpiredPenalties()` restores them. Routing
+// to a penalized key (e.g. via `allowPenalized`) caused the Lv.3-penalty bug
+// where a penalized key in a single-key pool kept serving requests and
+// escalated its penalty forever.
 function isRoutableStatus(status: string): boolean {
-  return status !== "DISABLED" && status !== "SUSPENDED" && status !== "TESTING" && status !== "COOLDOWN";
+  return status === "ACTIVE";
 }
 
 /**
@@ -180,7 +189,7 @@ export async function orchestrate(
       resolvedPool.cacheAware ? conv.lastPromptTokens : 0,
       {
         stickyBudgetTokens: resolvedPool.stickyContextTokenBudget ?? 0,
-        allowPenalized: true,
+        allowPenalized: false,
         cacheAware: resolvedPool.cacheAware,
       }
     );
@@ -280,6 +289,21 @@ export async function orchestrate(
           errorClassification: classified.classification,
         });
 
+        // Auto-calibration: scale this key's limits down on a throttle hit so
+        // it stops tripping penalties and finds the real sustainable ceiling.
+        if (classified.classification === "RATE_LIMITED") {
+          const newLimits = await handleAutoCalibrationFailure(
+            key.apiKeyId,
+            classified.classification
+          );
+          if (newLimits) {
+            console.error(
+              `[auto-cal] key=${key.apiKeyId.slice(0, 8)} rate-limited, scaled limits down → ` +
+                `rpm=${newLimits.rpmLimit ?? "∞"} tpm=${newLimits.tpmLimit ?? "∞"}`
+            );
+          }
+        }
+
         // Log failure
         await createRequestLog({
           poolId: logPoolId,
@@ -313,6 +337,10 @@ export async function orchestrate(
 
       // Success!
       await resetKeyHealth(key.apiKeyId);
+
+      // Auto-calibration: a success advances the streak; at the threshold we
+      // cautiously probe limits up toward the user's baseline ceiling.
+      await handleAutoCalibrationSuccess(key.apiKeyId);
 
       // ── Conversation affinity (cache stickiness) ─────
       // Remember this key as the conversation's current key so the next

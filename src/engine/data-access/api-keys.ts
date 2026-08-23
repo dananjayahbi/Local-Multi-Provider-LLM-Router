@@ -20,6 +20,7 @@ export interface ApiKeyInput {
   contextWindow?: number | null;
   cacheCapable?: boolean;
   cacheDiscountFactor?: number;
+  autoCalibration?: boolean;
 }
 
 export async function getKeysByProvider(providerId: string) {
@@ -83,6 +84,7 @@ export async function createApiKey(
       contextWindow: data.contextWindow ?? null,
       cacheCapable: data.cacheCapable ?? true,
       cacheDiscountFactor: data.cacheDiscountFactor ?? 0.1,
+      autoCalibration: data.autoCalibration ?? false,
     },
   });
 }
@@ -100,6 +102,7 @@ export async function updateApiKey(id: string, data: Partial<ApiKeyInput>) {
   if (data.contextWindow !== undefined) updateData.contextWindow = data.contextWindow;
   if (data.cacheCapable !== undefined) updateData.cacheCapable = data.cacheCapable;
   if (data.cacheDiscountFactor !== undefined) updateData.cacheDiscountFactor = data.cacheDiscountFactor;
+  if (data.autoCalibration !== undefined) updateData.autoCalibration = data.autoCalibration;
   return prisma.apiKey.update({ where: { id }, data: updateData });
 }
 

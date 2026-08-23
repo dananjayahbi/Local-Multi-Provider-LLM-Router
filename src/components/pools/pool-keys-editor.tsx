@@ -49,6 +49,7 @@ export interface ApiKey {
   penaltyExpiresAt: string | null;
   suspendedReason: string | null;
   calibrated: boolean;
+  autoCalibration: boolean;
   provider: { id: string; name: string; baseUrl: string; apiFormat: string };
 }
 
@@ -134,6 +135,11 @@ export function PoolKeysEditor({ apiKeys, poolId, onChanged }: PoolKeysEditorPro
                     {k.calibrated && (
                       <Badge variant="secondary" className="text-xs">
                         <Sparkles className="mr-1 h-3 w-3" /> Calibrated
+                      </Badge>
+                    )}
+                    {k.autoCalibration && (
+                      <Badge variant="outline" className="text-xs border-blue-500 text-blue-500">
+                        <Gauge className="mr-1 h-3 w-3" /> Auto-cal
                       </Badge>
                     )}
                     <KeyStatusBadge

@@ -17,6 +17,7 @@ export interface KeyLimitsForm {
   contextWindow: string;
   cacheCapable: boolean;
   cacheDiscountFactor: string;
+  autoCalibration: boolean;
 }
 
 /** Fresh blank limits form (all numeric fields empty = unlimited). */
@@ -31,6 +32,7 @@ export function emptyKeyLimitsForm(): KeyLimitsForm {
     contextWindow: "",
     cacheCapable: false,
     cacheDiscountFactor: "0.1",
+    autoCalibration: false,
   };
 }
 
@@ -48,6 +50,7 @@ export function keyLimitsToPayload(form: KeyLimitsForm) {
     contextWindow: num(form.contextWindow),
     cacheCapable: form.cacheCapable,
     cacheDiscountFactor: flt(form.cacheDiscountFactor),
+    autoCalibration: form.autoCalibration,
   };
 }
 
@@ -62,6 +65,7 @@ export function keyLimitsFromApiKey(key: {
   contextWindow?: number | null;
   cacheCapable?: boolean;
   cacheDiscountFactor?: number;
+  autoCalibration?: boolean;
 }): KeyLimitsForm {
   return {
     rpmLimit: key.rpmLimit != null ? String(key.rpmLimit) : "",
@@ -73,6 +77,7 @@ export function keyLimitsFromApiKey(key: {
     contextWindow: key.contextWindow != null ? String(key.contextWindow) : "",
     cacheCapable: key.cacheCapable ?? false,
     cacheDiscountFactor: key.cacheDiscountFactor != null ? String(key.cacheDiscountFactor) : "0.1",
+    autoCalibration: key.autoCalibration ?? false,
   };
 }
 
@@ -162,6 +167,29 @@ export function KeyLimitsFields({ value, onChange }: KeyLimitsFieldsProps) {
             step="0.01"
             placeholder="0.1"
           />
+        </div>
+      </div>
+
+      {/* Auto-calibration: dynamically tune limits based on live provider
+          outcomes (rate-limits scale down, success streaks probe up). */}
+      <div className="flex items-start gap-3 rounded-md border p-3">
+        <input
+          type="checkbox"
+          id="autoCalibration"
+          className="mt-1"
+          checked={value.autoCalibration}
+          onChange={(e) => set({ autoCalibration: e.target.checked })}
+        />
+        <div className="space-y-1">
+          <Label htmlFor="autoCalibration" className="cursor-pointer">
+            Auto-calibration
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            When enabled, the router watches real usage and tunes this key's
+            RPM/TPM/RPD/TPD toward its true ceiling: rate-limit errors scale
+            limits down, sustained success scales them back up. The limits you
+            set here become the maximum ceiling.
+          </p>
         </div>
       </div>
     </div>

@@ -24,6 +24,7 @@ export interface RateLimitKey {
   timeToFirstTokenMs: number | null;
   contextWindow: number | null;
   cacheCapable?: boolean;
+  autoCalibration?: boolean;
 }
 
 interface Props {
@@ -32,7 +33,7 @@ interface Props {
   onSaved: () => void;
 }
 
-const EMPTY = { rpmLimit: "", tpmLimit: "", rpdLimit: "", tpdLimit: "", tps: "", timeToFirstTokenMs: "", contextWindow: "" };
+const EMPTY = { rpmLimit: "", tpmLimit: "", rpdLimit: "", tpdLimit: "", tps: "", timeToFirstTokenMs: "", contextWindow: "", autoCalibration: false };
 
 const fmt = (v: number | null) => (v != null ? String(v) : "");
 
@@ -52,6 +53,7 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
         tps: fmt(keyData.tps),
         timeToFirstTokenMs: fmt(keyData.timeToFirstTokenMs),
         contextWindow: fmt(keyData.contextWindow),
+        autoCalibration: keyData.autoCalibration ?? false,
       });
     }
   }, [keyData]);
@@ -71,6 +73,7 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
           tps: form.tps ? Number(form.tps) : null,
           timeToFirstTokenMs: form.timeToFirstTokenMs ? Number(form.timeToFirstTokenMs) : null,
           contextWindow: form.contextWindow ? Number(form.contextWindow) : null,
+          autoCalibration: form.autoCalibration,
         }),
       });
       if (res.ok) {
@@ -117,6 +120,27 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
               />
             </div>
           ))}
+        </div>
+
+        {/* Auto-calibration toggle */}
+        <div className="flex items-start gap-3 rounded-md border p-3">
+          <input
+            type="checkbox"
+            id="autoCalibration"
+            className="mt-1"
+            checked={form.autoCalibration}
+            onChange={(e) => setForm((f) => ({ ...f, autoCalibration: e.target.checked }))}
+          />
+          <div className="space-y-1">
+            <Label htmlFor="autoCalibration" className="cursor-pointer">
+              Auto-calibration
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Tune this key's limits automatically from real usage: rate-limit
+              errors scale down, success streaks probe back up. The limits above
+              act as the maximum ceiling.
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-2">

@@ -45,6 +45,7 @@ interface ApiKeyItem {
   lastUsedAt: string | null;
   rpmLimit: number | null;
   tpmLimit: number | null;
+  autoCalibration: boolean;
 }
 
 interface ProviderModelItem {
@@ -112,7 +113,7 @@ export default function ProviderDetailPage() {
   const [editKeyDialogOpen, setEditKeyDialogOpen] = useState(false);
   const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null);
 
-  const [keyForm, setKeyForm] = useState({ label: "", secret: "", rpmLimit: "", tpmLimit: "" });
+  const [keyForm, setKeyForm] = useState({ label: "", secret: "", rpmLimit: "", tpmLimit: "", autoCalibration: false });
   const [modelForm, setModelForm] = useState({
     modelId: "",
     displayName: "",
@@ -120,7 +121,7 @@ export default function ProviderDetailPage() {
     supportsFunctionCalling: false,
     contextWindow: 0,
   });
-  const [editKeyForm, setEditKeyForm] = useState({ label: "", secret: "", rpmLimit: "", tpmLimit: "" });
+  const [editKeyForm, setEditKeyForm] = useState({ label: "", secret: "", rpmLimit: "", tpmLimit: "", autoCalibration: false });
 
   const loadData = useCallback(async () => {
     const res = await fetch(`/api/admin/providers/${id}`);
@@ -157,11 +158,12 @@ export default function ProviderDetailPage() {
         secret: keyForm.secret,
         rpmLimit: rpmVal,
         tpmLimit: tpmVal,
+        autoCalibration: keyForm.autoCalibration,
       }),
     });
     if (res.ok) {
       setKeyDialogOpen(false);
-      setKeyForm({ label: "", secret: "", rpmLimit: "", tpmLimit: "" });
+      setKeyForm({ label: "", secret: "", rpmLimit: "", tpmLimit: "", autoCalibration: false });
       loadData();
     }
   };
@@ -206,6 +208,7 @@ export default function ProviderDetailPage() {
         secret: editKeyForm.secret || undefined,
         rpmLimit: rpmVal,
         tpmLimit: tpmVal,
+        autoCalibration: editKeyForm.autoCalibration,
       }),
     });
     if (res.ok) {
@@ -290,6 +293,14 @@ export default function ProviderDetailPage() {
                     />
                   </div>
                 </div>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={keyForm.autoCalibration}
+                    onChange={(e) => setKeyForm({ ...keyForm, autoCalibration: e.target.checked })}
+                  />
+                  Auto-calibration
+                </label>
                 <Button onClick={handleAddKey} className="w-full">Add Key</Button>
               </div>
             </DialogContent>
@@ -349,6 +360,7 @@ export default function ProviderDetailPage() {
                         secret: "",
                         rpmLimit: k.rpmLimit != null ? String(k.rpmLimit) : "",
                         tpmLimit: k.tpmLimit != null ? String(k.tpmLimit) : "",
+                        autoCalibration: k.autoCalibration ?? false,
                       });
                       setEditKeyDialogOpen(true);
                     }}>
@@ -465,6 +477,14 @@ export default function ProviderDetailPage() {
                 />
               </div>
             </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editKeyForm.autoCalibration}
+                onChange={(e) => setEditKeyForm({ ...editKeyForm, autoCalibration: e.target.checked })}
+              />
+              Auto-calibration
+            </label>
             <Button onClick={handleEditKey} className="w-full">Save Changes</Button>
           </div>
         </DialogContent>

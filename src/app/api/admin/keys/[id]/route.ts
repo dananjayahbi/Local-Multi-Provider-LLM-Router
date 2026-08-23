@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { updateApiKey, deleteApiKey } from "@/engine/data-access/api-keys";
 import { disableKey, enableKey, reactivateKey, resetPenalty } from "@/engine/health-engine";
 import { parseRateLimitInput } from "@/lib/api-key-rate-limits";
+import {
+  enableAutoCalibration,
+  disableAutoCalibration,
+} from "@/engine/benchmark/auto-calibration";
 
 export async function PUT(
   request: NextRequest,
@@ -15,6 +19,7 @@ export async function PUT(
       rpmLimit, tpmLimit, rpdLimit, tpdLimit,
       tps, timeToFirstTokenMs, contextWindow,
       cacheCapable, cacheDiscountFactor,
+      autoCalibration,
     } = body;
 
     const parsed = (fieldName: any, value: unknown, allowFloat = false) => {
@@ -51,7 +56,17 @@ export async function PUT(
       cacheCapable,
       cacheDiscountFactor:
         cacheDiscountFactor != null ? Number(cacheDiscountFactor) : undefined,
+      autoCalibration,
     });
+
+    // Auto-calibration lifecycle: seed baseline on enable, clear on disable,
+    // and re-baseline whenever the user manually edits limits while enabled.
+    if (autoCalibration === true) {
+      await enableAutoCalibration(id);
+    } else if (autoCalibration === false) {
+      await disableAutoCalibration(id);
+    }
+
     return NextResponse.json(apiKey);
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

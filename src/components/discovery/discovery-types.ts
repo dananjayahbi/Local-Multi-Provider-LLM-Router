@@ -43,6 +43,7 @@ export interface ProviderApiKey {
   tps: number | null;
   timeToFirstTokenMs: number | null;
   contextWindow: number | null;
+  autoCalibration?: boolean;
   poolApiKeys?: { poolId: string }[];
 }
 

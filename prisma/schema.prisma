@@ -60,6 +60,11 @@ model ApiKey {
   consecutiveFailures Int     @default(0)
   calibrated        Boolean   @default(false)
   lastCalibratedAt  DateTime?
+  // ── auto-calibration ──
+  // When enabled, the orchestrator observes real provider outcomes and
+  // tunes the key's RPM/TPM/RPD/TPD limits toward their true ceiling.
+  autoCalibration       Boolean  @default(false)
+  autoCalibrationState  String?  // JSON: { baseline, consecutiveSuccesses, lastAdjustmentAt }
   lastUsedAt        DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
