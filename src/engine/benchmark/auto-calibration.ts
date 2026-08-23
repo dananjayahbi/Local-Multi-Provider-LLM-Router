@@ -10,6 +10,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { ErrorClassification } from "../error-classifier";
+import { detectLimitFromError } from "../penalty-application";
+import { LimitName } from "../playground/types";
 import {
   createAutoCalibrationEvent,
 } from "../data-access/auto-calibration-events";
@@ -55,6 +57,125 @@ function isEmptyMap(l: AutoCalibrationLimits): boolean {
     l.rpdLimit == null &&
     l.tpdLimit == null
   );
+}
+
+// ─── First-throttle seeding ───────────────────────────
+// A key that is auto-calibrated but has NO limits yet (∞/unlimited) can never
+// be tuned by AIMD alone: `scaleDown(null)` is a no-op and `isEmptyMap(baseline)`
+// short-circuits every success probe. The very FIRST provider throttle is the
+// strongest signal we'll ever get about the key's real ceiling, so we use it
+// to SEED the limits. This is what makes the calibrator "aware from the very
+// beginning" — it stops hammering the provider and starts throttling locally.
+
+// Fallback ceilings when the provider message doesn't state an explicit number.
+const SEED_FALLBACKS: Record<LimitName, number> = {
+  RPM: 30,
+  TPM: 60_000,
+  RPD: 300,
+  TPD: 300_000,
+  CONTEXT: 30, // unreachable; placeholder for type completeness
+};
+
+/** Parse the first positive integer from a provider message (e.g. "45 RPM").
+ *  Rejects HTTP status codes (400-599) so "429 Too Many Requests" never
+ *  becomes a synthetic ceiling. */
+function parseCeiling(message: string | null): number | null {
+  if (!message) return null;
+  const match = message.match(/(\d{1,7})/);
+  if (!match) return null;
+  const n = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  // A bare status code (e.g. 429/500/403) is NOT a rate-limit ceiling.
+  if (n >= 400 && n <= 599) return null;
+  return n;
+}
+
+/**
+ * Seed an auto-calibrated, currently-unlimited key with limits derived from
+ * its first observed throttle. Returns the new limits (or null if the key is
+ * already limited or not auto-calibrated).
+ */
+export async function seedLimitsOnFirstThrottle(
+  apiKeyId: string,
+  classification: ErrorClassification,
+  providerErrorMessage?: string | null
+): Promise<AutoCalibrationLimits | null> {
+  const key = await prisma.apiKey.findUnique({ where: { id: apiKeyId } });
+  if (!key || !key.autoCalibration) return null;
+
+  // Only seed from a live throttle signal (RATE_LIMITED). Quota/auth/network
+  // errors must either suspend the key or use the AIMD path, never seed.
+  if (classification !== "RATE_LIMITED") return null;
+
+  const current = currentLimits(key);
+  // If the key already has ANY limit, don't reseed — normal AIMD takes over.
+  if (!isEmptyMap(current)) return null;
+
+  // Which limit did the provider complain about? If we can't tell (bare 429),
+  // DEFAULT to RPM — the most common and impactful signal. The user wants the
+  // calibrator to be aware from the very beginning, so the first rate limit
+  // must ALWAYS seed something to stop hammering the provider.
+  const detected =
+    detectLimitFromError(classification, providerErrorMessage ?? null, null) ?? "RPM";
+
+  // Derive the ceiling: explicit number in the message, else the fallback.
+  const explicit = parseCeiling(providerErrorMessage ?? null);
+  const ceiling =
+    detected === "RPM"
+      ? explicit ?? SEED_FALLBACKS.RPM
+      : explicit ?? SEED_FALLBACKS[detected];
+
+  const baseline: AutoCalibrationLimits = { ...EMPTY_LIMITS };
+  const next: AutoCalibrationLimits = { ...EMPTY_LIMITS };
+  switch (detected) {
+    case "RPM":
+      baseline.rpmLimit = ceiling;
+      next.rpmLimit = scaleDown(ceiling, MIN_RPM);
+      break;
+    case "TPM":
+      baseline.tpmLimit = ceiling;
+      next.tpmLimit = scaleDown(ceiling, MIN_TPM);
+      break;
+    case "RPD":
+      baseline.rpdLimit = ceiling;
+      next.rpdLimit = scaleDown(ceiling, MIN_RPD);
+      break;
+    case "TPD":
+      baseline.tpdLimit = ceiling;
+      next.tpdLimit = scaleDown(ceiling, MIN_TPD);
+      break;
+  }
+
+  const state: AutoCalibrationState = {
+    baseline,
+    consecutiveSuccesses: 0,
+    lastAdjustmentAt: Date.now(),
+  };
+  await writeAutoCalibrationState(apiKeyId, state);
+  await updateKeyLimits(apiKeyId, next);
+
+  await createAutoCalibrationEvent({
+    apiKeyId,
+    kind: "SCALE_DOWN",
+    limit: detected,
+    message: `First throttle (${classification}) — seeded ${detected} limit from provider signal`,
+    detail: {
+      classification,
+      seed: true,
+      detected,
+      source: explicit ? "provider_message" : "fallback",
+      before: current,
+      after: next,
+      baseline,
+    },
+  });
+
+  console.error(
+    `[auto-cal] key=${apiKeyId.slice(0, 8)} FIRST throttle — seeded ${detected}=${ceiling}` +
+      ` (current ${detected}=${next[detected === "RPM" ? "rpmLimit" : detected === "TPM" ? "tpmLimit" : detected === "RPD" ? "rpdLimit" : "tpdLimit"]})`
+  );
+
+  return next;
 }
 
 // ─── State read/write helpers ─────────────────────────
@@ -166,7 +287,8 @@ export async function disableAutoCalibration(apiKeyId: string): Promise<void> {
  */
 export async function handleAutoCalibrationFailure(
   apiKeyId: string,
-  classification: ErrorClassification
+  classification: ErrorClassification,
+  providerErrorMessage?: string | null
 ): Promise<AutoCalibrationLimits | null> {
   const key = await prisma.apiKey.findUnique({ where: { id: apiKeyId } });
   if (!key || !key.autoCalibration) return null;
@@ -185,6 +307,21 @@ export async function handleAutoCalibrationFailure(
   // QUOTA_EXCEEDED / AUTH_ERROR suspend the key, so auto-calibration should
   // not fight them — only live throttle signals drive limit tuning.
   if (!isThrottle) return null;
+
+  // FIRST THROTTLE ON AN UNLIMITED KEY: seed real limits so the calibrator
+  // becomes aware from the very beginning (task 01). Without this, an ∞ key
+  // stays ∞ forever and the provider gets hammered → 429 → penalized → pool
+  // exhausted → "no response returned".
+  try {
+    const seeded = await seedLimitsOnFirstThrottle(
+      apiKeyId,
+      classification,
+      providerErrorMessage
+    );
+    if (seeded) return seeded;
+  } catch (err) {
+    console.error(`[auto-cal] seed-on-first-throttle failed for ${apiKeyId.slice(0, 8)}:`, err);
+  }
 
   let state = await readAutoCalibrationState(apiKeyId);
   if (!state) {

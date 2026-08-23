@@ -93,12 +93,17 @@ export function resolvePenaltyDecision(
   }
 ): PenaltyDecision {
   // ── PRE_DEFINED: we know the specific limit that was hit ──
-  if (limit) {
-    const cooldownSeconds = LIMIT_PENALTY_SECONDS[limit] ?? 60;
+  // A bare 429 (RATE_LIMITED with no detectable limit text) is almost always
+  // an RPM throttle — do NOT escalate it into a 10-minute VARIABLE cooldown.
+  // Default to the short RPM penalty so the key recovers in ~a minute. This
+  // matches the auto-calibrator, which also seeds RPM on an ambiguous throttle.
+  const effectiveLimit = limit ?? (classification === "RATE_LIMITED" ? "RPM" : null);
+  if (effectiveLimit) {
+    const cooldownSeconds = LIMIT_PENALTY_SECONDS[effectiveLimit] ?? 60;
     return {
       penaltyType: "PRE_DEFINED",
-      penaltyReason: limit,
-      penaltyLabel: `Hit ${limit} limit`,
+      penaltyReason: effectiveLimit,
+      penaltyLabel: `Hit ${effectiveLimit} limit`,
       cooldownSeconds,
       penaltyLevel: 0,
     };

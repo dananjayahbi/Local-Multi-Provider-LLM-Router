@@ -142,6 +142,7 @@ export async function checkAndRecoverExpiredPenalties(): Promise<number> {
     },
     data: {
       status: "ACTIVE",
+      penaltyLevel: 0,
       lastPenaltyEndedAt: now,
       penaltyType: null,
       penaltyReason: null,

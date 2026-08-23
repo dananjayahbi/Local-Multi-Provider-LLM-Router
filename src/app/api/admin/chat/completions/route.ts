@@ -108,6 +108,7 @@ export async function POST(request: NextRequest) {
         providerName: provider.name,
         baseUrl: provider.baseUrl,
         apiFormat: provider.apiFormat,
+        reliableToolCalls: providerModel.reliableToolCalling !== false,
         keys: keys.map((k) => ({
           apiKeyId: k.id,
           apiKeyLabel: k.label,

@@ -92,7 +92,11 @@ export async function POST(request: NextRequest) {
       poolMembers: {
         include: {
           providerModel: {
-            include: {
+            select: {
+              id: true,
+              modelId: true,
+              displayName: true,
+              reliableToolCalling: true,
               provider: {
                 select: {
                   id: true, name: true, baseUrl: true, apiFormat: true,
@@ -177,6 +181,7 @@ export async function POST(request: NextRequest) {
         providerName: m.providerModel.provider.name,
         baseUrl: m.providerModel.provider.baseUrl,
         apiFormat: m.providerModel.provider.apiFormat,
+        reliableToolCalls: m.providerModel.reliableToolCalling !== false,
         keys: poolKeys
           .filter((k) => k.providerId === m.providerModel.provider.id)
           .map((k) => ({

@@ -25,6 +25,7 @@ const EMPTY_FORM = {
   displayName: "",
   supportsVision: false,
   supportsFunctionCalling: false,
+  reliableToolCalling: true,
   contextWindow: "",
 };
 
@@ -43,6 +44,7 @@ export function EditModelDialog({ model, onOpenChange, onSaved }: Props) {
         displayName: model.displayName,
         supportsVision: model.supportsVision,
         supportsFunctionCalling: model.supportsFunctionCalling,
+        reliableToolCalling: model.reliableToolCalling !== false,
         contextWindow: model.contextWindow != null ? String(model.contextWindow) : "",
       });
     }
@@ -60,6 +62,7 @@ export function EditModelDialog({ model, onOpenChange, onSaved }: Props) {
           displayName: form.displayName.trim(),
           supportsVision: form.supportsVision,
           supportsFunctionCalling: form.supportsFunctionCalling,
+          reliableToolCalling: form.reliableToolCalling,
           contextWindow: form.contextWindow ? Number(form.contextWindow) : null,
         }),
       });
@@ -131,6 +134,14 @@ export function EditModelDialog({ model, onOpenChange, onSaved }: Props) {
                   onChange={(e) => setForm({ ...form, supportsFunctionCalling: e.target.checked })}
                 />
                 Function calling
+              </label>
+              <label className="flex items-center gap-2 text-sm" title="Sometimes a model advertises function calling but returns an empty response when tools are sent as an array. Unchecking this makes the gateway strip tools for that model.">
+                <input
+                  type="checkbox"
+                  checked={form.reliableToolCalling}
+                  onChange={(e) => setForm({ ...form, reliableToolCalling: e.target.checked })}
+                />
+                Reliable function calling
               </label>
             </div>
           </div>

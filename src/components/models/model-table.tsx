@@ -22,6 +22,9 @@ export interface ModelRow {
   supportsFunctionCalling: boolean;
   contextWindow: number | null;
   enabled: boolean;
+  /** When false, the gateway strips `tools` before calling this model (fixes
+   *  models that return empty completions for tool arrays). */
+  reliableToolCalling?: boolean;
   provider: { id: string; name: string; baseUrl: string; apiFormat: string };
 }
 
@@ -102,6 +105,9 @@ export function ModelTable({ models, onChanged }: Props) {
               <div className="flex gap-1">
                 {m.supportsVision && <Badge variant="outline">vision</Badge>}
                 {m.supportsFunctionCalling && <Badge variant="outline">function-calling</Badge>}
+                {m.reliableToolCalling === false && (
+                  <Badge variant="secondary" className="text-amber-600">tools stripped</Badge>
+                )}
               </div>
             </TableCell>
             <TableCell className="text-right text-sm">

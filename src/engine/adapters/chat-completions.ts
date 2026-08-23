@@ -8,6 +8,30 @@ import {
   contentToParts,
 } from "../canonical";
 import { normalizeCanonicalResponse } from "../response-normalizer";
+import {
+  ReasoningBridger,
+  hasUsableContent,
+  sanitizeStreamDelta,
+} from "./stream-helpers";
+
+// ─── Per-response reasoning bridging state ────────────
+// `parseStreamChunk` is a stateless function, but bridging must know whether
+// real content has started across consecutive chunks OF THE SAME response. We
+// key a fresh bridger by the response `id` so concurrent streams don't share
+// state, and prune entries after the stream ends.
+const bridgerById = new Map<string, ReasoningBridger>();
+function getBridger(id: string | undefined): ReasoningBridger {
+  const key = id || "__anon__";
+  let b = bridgerById.get(key);
+  if (!b) {
+    b = new ReasoningBridger();
+    bridgerById.set(key, b);
+  }
+  return b;
+}
+function releaseBridger(id: string | undefined): void {
+  if (id) bridgerById.delete(id);
+}
 
 function generateId(): string {
   return "chatcmpl-" + crypto.randomUUID();
@@ -99,12 +123,28 @@ export const chatCompletionsAdapter: ProviderAdapter = {
         }));
         // Providers sometimes emit empty choices[] between tool-call handoffs
         if (choices.length === 0) continue;
-        return {
+        // Surface reasoning as visible content so strict OpenAI-compatible
+        // clients (Copilot/openai) never see an empty `content` stream.
+        let canon: CanonicalDelta = {
           id: raw.id,
           model: raw.model,
           choices: choices as CanonicalDelta["choices"],
           usage: raw.usage,
         };
+        const bridger = getBridger(raw.id as string);
+        canon = bridger.surface(canon);
+        // Strip vendor-only fields (reasoning/reasoning_details/reasoning_content)
+        // so strict chat-completions clients never choke on them.
+        canon = sanitizeStreamDelta(canon);
+        // Terminal chunk: clean up per-response bridger state.
+        if (canon.choices.some((c) => c.finish_reason != null)) {
+          releaseBridger(raw.id as string);
+        }
+        // Drop deltas that carry neither content nor tool calls nor a
+        // finish_reason (pure heartbeat/empty chunks) — they confuse clients.
+        const hasTerminal = canon.choices.some((c) => c.finish_reason != null);
+        if (!hasUsableContent(canon) && !hasTerminal) continue;
+        return canon;
       } catch {
         return null;
       }

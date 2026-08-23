@@ -93,6 +93,11 @@ model ProviderModel {
   supportsFunctionCalling Boolean  @default(false)
   contextWindow          Int?
   enabled                Boolean   @default(true)
+  // Some free reasoning models (e.g. OpenRouter stealth/ox-alpha) return an
+  // EMPTY completion when `tools` is sent as an array, despite advertising
+  // function calling. Set this false to strip tools on the first attempt so
+  // the client never receives an empty response.
+  reliableToolCalling    Boolean   @default(true)
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 

@@ -13,7 +13,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { providerId, modelId, displayName, supportsVision, supportsFunctionCalling, contextWindow } = body;
+    const { providerId, modelId, displayName, supportsVision, supportsFunctionCalling, contextWindow, reliableToolCalling } = body;
 
     if (!providerId || !modelId) {
       return NextResponse.json(
@@ -28,6 +28,7 @@ export async function POST(request: NextRequest) {
       supportsVision: Boolean(supportsVision),
       supportsFunctionCalling: Boolean(supportsFunctionCalling),
       contextWindow: contextWindow != null ? Number(contextWindow) : undefined,
+      reliableToolCalling: reliableToolCalling !== false,
     });
     return NextResponse.json(model, { status: 201 });
   } catch (err) {

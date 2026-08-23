@@ -43,6 +43,9 @@ import {
   setConversationKey,
   setPendingInjection,
 } from "./routing/conversation";
+import {
+  withoutTools,
+} from "./routing/empty-completion";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -58,6 +61,10 @@ interface CandidateMember {
   providerName: string;
   baseUrl: string;
   apiFormat: string;
+  /** Whether this model reliably handles a `tools` array. When false the
+   *  orchestrator strips tools before building the request (fixes models that
+   *  return empty completions for tool calls). Defaults to true. */
+  reliableToolCalls?: boolean;
   keys: CandidateKey[];
 }
 
@@ -254,10 +261,14 @@ export async function orchestrate(
       const decryptedKey =
         key.secret || (key.secretEncrypted ? decrypt(key.secretEncrypted) : "");
 
-      // Get adapter and build request
+      // Get adapter and build request. Some free reasoning models (Oracle's
+      // stealth/ox-alpha etc.) return an EMPTY completion when `tools` is sent
+      // as an array, so we strip tools for models flagged `reliableToolCalls:
+      // false`. This is the proactive fix (no wasted round-trip).
       const adapter = getAdapter(member.apiFormat);
+      const requestForModel = member.reliableToolCalls === false ? withoutTools(canonicalRequest) : canonicalRequest;
       const { url, headers, body } = adapter.buildRequest(
-        canonicalRequest,
+        requestForModel,
         decryptedKey,
         member.baseUrl,
         member.providerModelName
@@ -297,7 +308,8 @@ export async function orchestrate(
         if (classified.classification === "RATE_LIMITED") {
           const newLimits = await handleAutoCalibrationFailure(
             key.apiKeyId,
-            classified.classification
+            classified.classification,
+            classified.providerErrorMessage
           );
           if (newLimits) {
             console.error(

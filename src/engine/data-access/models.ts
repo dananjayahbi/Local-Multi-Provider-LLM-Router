@@ -42,6 +42,7 @@ export async function createProviderModel(
     supportsVision?: boolean;
     supportsFunctionCalling?: boolean;
     contextWindow?: number;
+    reliableToolCalling?: boolean;
   }
 ) {
   return prisma.providerModel.create({
@@ -61,6 +62,7 @@ export async function updateProviderModel(
     supportsFunctionCalling?: boolean;
     contextWindow?: number;
     enabled?: boolean;
+    reliableToolCalling?: boolean;
   }
 ) {
   return prisma.providerModel.update({ where: { id }, data });
