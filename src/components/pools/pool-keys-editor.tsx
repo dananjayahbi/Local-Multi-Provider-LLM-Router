@@ -47,6 +47,8 @@ export interface ApiKey {
   status: string;
   penaltyLevel: number;
   penaltyExpiresAt: string | null;
+  penaltyType: string | null;
+  penaltyReason: string | null;
   suspendedReason: string | null;
   calibrated: boolean;
   autoCalibration: boolean;
@@ -146,6 +148,8 @@ export function PoolKeysEditor({ apiKeys, poolId, onChanged }: PoolKeysEditorPro
                       status={k.status}
                       penaltyLevel={k.penaltyLevel}
                       penaltyExpiresAt={k.penaltyExpiresAt}
+                      penaltyType={k.penaltyType}
+                      penaltyReason={k.penaltyReason}
                       suspendedReason={k.suspendedReason}
                     />
                   </div>

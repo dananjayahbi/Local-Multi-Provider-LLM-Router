@@ -7,11 +7,20 @@ interface KeyStatusBadgeProps {
   status: string;
   penaltyLevel: number;
   penaltyExpiresAt: string | null;
+  penaltyType?: string | null;
+  penaltyReason?: string | null;
   suspendedReason: string | null;
 }
 
 /** Renders a colored status badge for an API key, matching the existing provider-page pattern. */
-export function KeyStatusBadge({ status, penaltyLevel, penaltyExpiresAt, suspendedReason }: KeyStatusBadgeProps) {
+export function KeyStatusBadge({
+  status,
+  penaltyLevel,
+  penaltyExpiresAt,
+  penaltyType,
+  penaltyReason,
+  suspendedReason,
+}: KeyStatusBadgeProps) {
   if (status === "ACTIVE") {
     return (
       <Badge variant="success">
@@ -25,9 +34,15 @@ export function KeyStatusBadge({ status, penaltyLevel, penaltyExpiresAt, suspend
       : 0;
     const mins = Math.floor(remaining / 60);
     const secs = remaining % 60;
+    const typeLabel =
+      penaltyType === "PRE_DEFINED"
+        ? `Pre-defined${penaltyReason ? ` · ${penaltyReason}` : ""}`
+        : penaltyType === "VARIABLE"
+          ? `Variable Lv.${penaltyLevel}`
+          : `Lv.${penaltyLevel}`;
     return (
       <Badge variant="warning">
-        <AlertTriangle className="mr-1 h-3 w-3" /> Penalized Lv.{penaltyLevel} ({mins}m {secs}s)
+        <AlertTriangle className="mr-1 h-3 w-3" /> Penalized {typeLabel} ({mins}m {secs}s)
       </Badge>
     );
   }

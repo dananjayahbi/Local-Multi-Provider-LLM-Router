@@ -283,10 +283,13 @@ export async function orchestrate(
           member.apiFormat
         );
 
-        // Apply health action
+        // Apply health action (pass the raw provider message/code so the
+        // penalty engine can detect WHICH limit was hit — RPM/TPM/RPD/TPD).
         await applyFailure({
           apiKeyId: key.apiKeyId,
           errorClassification: classified.classification,
+          providerErrorMessage: classified.providerErrorMessage,
+          providerErrorCode: classified.providerErrorCode,
         });
 
         // Auto-calibration: scale this key's limits down on a throttle hit so
@@ -418,6 +421,8 @@ export async function orchestrate(
         await applyFailure({
           apiKeyId: key.apiKeyId,
           errorClassification: classification,
+          providerErrorMessage: message,
+          providerErrorCode: null,
         });
       }
 

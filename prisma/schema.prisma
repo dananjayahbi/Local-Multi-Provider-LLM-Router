@@ -57,6 +57,11 @@ model ApiKey {
   penaltyExpiresAt  DateTime?
   lastPenaltyEndedAt DateTime?
   suspendedReason   String?
+  // ── penalty type (task 04) ──
+  // "VARIABLE" = escalating cooldown seeded by key history + auto-calibration.
+  // "PRE_DEFINED" = fixed duration tied to the limit that was hit (RPM/TPM/RPD/TPD).
+  penaltyType       String?   // VARIABLE, PRE_DEFINED
+  penaltyReason     String?   // RATE_LIMITED, RPM, TPM, RPD, TPD, SERVER_ERROR, NETWORK_ERROR
   consecutiveFailures Int     @default(0)
   calibrated        Boolean   @default(false)
   lastCalibratedAt  DateTime?
@@ -75,6 +80,7 @@ model ApiKey {
   benchmarks  ApiKeyBenchmark[]
   poolApiKeys PoolApiKey[]
   calibrationSessions CalibrationSession[]
+  autoCalibrationEvents AutoCalibrationEvent[]
 }
 
 // ─── Provider Model ─────────────────────────────────────
@@ -189,6 +195,25 @@ model ApiKeyBenchmark {
   testedAt           DateTime @default(now())
 
   apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+}
+
+// ─── Auto-Calibration Event ─────────────────────────────
+// Timeline of automatic limit adjustments and observed provider errors
+// for a single auto-calibrated key (task 02). The orchestrator appends one
+// row every time it scales a limit down (throttle) or probes up (success
+// streak), so the "Auto Calibrations" page can render a detailed history.
+model AutoCalibrationEvent {
+  id          String   @id @default(cuid())
+  apiKeyId    String
+  kind        String   // FAILURE, SUCCESS, SCALE_DOWN, SCALE_UP, BASELINE_RESET
+  limit       String?  // RPM, TPM, RPD, TPD, or null for generic events
+  message     String
+  detail      String?  // JSON: before/after limits, classification, streak, etc.
+  createdAt   DateTime @default(now())
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([apiKeyId, createdAt])
 }
 
 // ─── Benchmark Config (singleton) ───────────────────────

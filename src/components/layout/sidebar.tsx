@@ -17,6 +17,7 @@ import {
   FlaskConical,
   Boxes,
   MessageSquare,
+  Activity,
 } from "lucide-react";
 
 const navItems = [
@@ -26,6 +27,7 @@ const navItems = [
   { href: "/models", label: "Models", icon: Boxes },
   { href: "/pools", label: "Pools", icon: Layers },
   { href: "/benchmarks", label: "Calibration", icon: Gauge },
+  { href: "/auto-calibrations", label: "Auto Calibrations", icon: Activity },
   { href: "/discovery", label: "Discovery", icon: Compass },
   { href: "/terminal", label: "Terminal", icon: Terminal },
   { href: "/playground", label: "Playground", icon: FlaskConical },

@@ -10,6 +10,9 @@
 
 import { prisma } from "@/lib/prisma";
 import { ErrorClassification } from "../error-classifier";
+import {
+  createAutoCalibrationEvent,
+} from "../data-access/auto-calibration-events";
 
 // ─── Tuning constants ─────────────────────────────────
 const DECREASE_FACTOR = 0.7; // multiply down by 30% on a throttle hit
@@ -168,6 +171,16 @@ export async function handleAutoCalibrationFailure(
   const key = await prisma.apiKey.findUnique({ where: { id: apiKeyId } });
   if (!key || !key.autoCalibration) return null;
 
+  // Always log the observed provider error to the timeline so the UI can show
+  // "at T it hit <limit>" even when auto-calibration decides not to scale.
+  await createAutoCalibrationEvent({
+    apiKeyId,
+    kind: "FAILURE",
+    limit: classification,
+    message: `Observed provider error: ${classification}`,
+    detail: { classification },
+  });
+
   const isThrottle = classification === "RATE_LIMITED";
   // QUOTA_EXCEEDED / AUTH_ERROR suspend the key, so auto-calibration should
   // not fight them — only live throttle signals drive limit tuning.
@@ -198,6 +211,18 @@ export async function handleAutoCalibrationFailure(
   state.lastAdjustmentAt = Date.now();
   await writeAutoCalibrationState(apiKeyId, state);
   await updateKeyLimits(apiKeyId, next);
+
+  await createAutoCalibrationEvent({
+    apiKeyId,
+    kind: "SCALE_DOWN",
+    message: `Rate-limit hit (${classification}) — scaled down limits`,
+    detail: {
+      classification,
+      before: current,
+      after: next,
+    },
+  });
+
   return next;
 }
 
@@ -249,6 +274,18 @@ export async function handleAutoCalibrationSuccess(
   state.lastAdjustmentAt = Date.now();
   await writeAutoCalibrationState(apiKeyId, state);
   await updateKeyLimits(apiKeyId, next);
+
+  await createAutoCalibrationEvent({
+    apiKeyId,
+    kind: "SCALE_UP",
+    message: `Success streak reached ${SUCCESS_STREAK_THRESHOLD} — probed limits up toward baseline`,
+    detail: {
+      streak: SUCCESS_STREAK_THRESHOLD,
+      before: current,
+      after: next,
+    },
+  });
+
   return next;
 }
 
@@ -264,5 +301,13 @@ export async function resetAutoCalibrationBaseline(
     lastAdjustmentAt: null,
   };
   await writeAutoCalibrationState(apiKeyId, state);
+
+  await createAutoCalibrationEvent({
+    apiKeyId,
+    kind: "BASELINE_RESET",
+    message: "Auto-calibration baseline re-captured from current limits",
+    detail: { baseline: state.baseline },
+  });
+
   return state;
 }

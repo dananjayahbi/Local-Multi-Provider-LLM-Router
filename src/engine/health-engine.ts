@@ -4,10 +4,14 @@
 
 import { prisma } from "@/lib/prisma";
 import { ErrorClassification } from "./error-classifier";
+import { detectLimitFromError, resolvePenaltyDecision } from "./penalty-application";
 
 export interface HealthUpdateInput {
   apiKeyId: string;
   errorClassification: ErrorClassification;
+  /** Raw provider message/code so we can detect WHICH limit was hit (task 04). */
+  providerErrorMessage?: string | null;
+  providerErrorCode?: string | null;
 }
 
 export interface HealthActionResult {
@@ -16,20 +20,22 @@ export interface HealthActionResult {
   penaltyLevel: number;
   penaltyExpiresAt: Date | null;
   suspendedReason: string | null;
+  penaltyType: string | null;
+  penaltyReason: string | null;
 }
 
-async function getSettings() {
+export async function getSettings() {
   const settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
   return {
     baseCooldown: settings?.penaltyBaseCooldownSeconds ?? 600,
     multiplier: settings?.penaltyMultiplier ?? 3,
     maxCooldown: settings?.penaltyMaxCooldownSeconds ?? 21600,
-    resetWindow: settings?.penaltyResetWindowSeconds ?? 3600,
+    resetWindowSeconds: settings?.penaltyResetWindowSeconds ?? 3600,
   };
 }
 
 export async function applyFailure(input: HealthUpdateInput): Promise<HealthActionResult> {
-  const { apiKeyId, errorClassification } = input;
+  const { apiKeyId, errorClassification, providerErrorMessage, providerErrorCode } = input;
 
   // Don't penalize for invalid requests
   if (errorClassification === "INVALID_REQUEST") {
@@ -40,6 +46,8 @@ export async function applyFailure(input: HealthUpdateInput): Promise<HealthActi
       penaltyLevel: key?.penaltyLevel ?? 0,
       penaltyExpiresAt: key?.penaltyExpiresAt ?? null,
       suspendedReason: null,
+      penaltyType: key?.penaltyType ?? null,
+      penaltyReason: key?.penaltyReason ?? null,
     };
   }
 
@@ -53,6 +61,8 @@ export async function applyFailure(input: HealthUpdateInput): Promise<HealthActi
           errorClassification === "QUOTA_EXCEEDED" ? "quota_exceeded" : "invalid_credentials",
         consecutiveFailures: { increment: 1 },
         lastUsedAt: new Date(),
+        penaltyType: null,
+        penaltyReason: null,
       },
     });
     return {
@@ -61,6 +71,8 @@ export async function applyFailure(input: HealthUpdateInput): Promise<HealthActi
       penaltyLevel: key.penaltyLevel,
       penaltyExpiresAt: key.penaltyExpiresAt,
       suspendedReason: key.suspendedReason,
+      penaltyType: null,
+      penaltyReason: null,
     };
   }
 
@@ -71,44 +83,53 @@ export async function applyFailure(input: HealthUpdateInput): Promise<HealthActi
   const key = await prisma.apiKey.findUnique({ where: { id: apiKeyId } });
   if (!key) throw new Error(`ApiKey not found: ${apiKeyId}`);
 
-  let newLevel: number;
-  let cooldownSeconds: number;
+  // Task 04: detect WHICH limit was hit (if any) and pick the penalty type.
+  const detectedLimit = detectLimitFromError(
+    errorClassification,
+    providerErrorMessage ?? null,
+    providerErrorCode ?? null
+  );
+  const decision = resolvePenaltyDecision(
+    errorClassification,
+    detectedLimit,
+    {
+      currentPenaltyLevel: key.penaltyLevel,
+      lastPenaltyEndedAt: key.lastPenaltyEndedAt,
+      now,
+      autoCalibration: key.autoCalibration,
+    },
+    settings
+  );
 
-  const shouldReset =
-    key.penaltyLevel === 0 ||
-    !key.lastPenaltyEndedAt ||
-    now.getTime() - key.lastPenaltyEndedAt.getTime() > settings.resetWindow * 1000;
-
-  if (shouldReset) {
-    newLevel = 1;
-    cooldownSeconds = settings.baseCooldown;
-  } else {
-    newLevel = key.penaltyLevel + 1;
-    cooldownSeconds = Math.min(
-      settings.baseCooldown * Math.pow(settings.multiplier, newLevel - 1),
-      settings.maxCooldown
-    );
-  }
-
-  const penaltyExpiresAt = new Date(now.getTime() + cooldownSeconds * 1000);
+  const penaltyExpiresAt = new Date(now.getTime() + decision.cooldownSeconds * 1000);
 
   await prisma.apiKey.update({
     where: { id: apiKeyId },
     data: {
       status: "PENALIZED",
-      penaltyLevel: newLevel,
+      penaltyLevel: decision.penaltyLevel,
       penaltyExpiresAt,
+      penaltyType: decision.penaltyType,
+      penaltyReason: decision.penaltyReason,
       consecutiveFailures: { increment: 1 },
       lastUsedAt: now,
     },
   });
 
+  console.error(
+    `[health] key=${apiKeyId.slice(0, 8)} penalized (${decision.penaltyType}) ` +
+      `reason=${decision.penaltyReason} level=${decision.penaltyLevel} ` +
+      `cooldown=${decision.cooldownSeconds}s`
+  );
+
   return {
     keyId: apiKeyId,
     newStatus: "PENALIZED",
-    penaltyLevel: newLevel,
+    penaltyLevel: decision.penaltyLevel,
     penaltyExpiresAt,
     suspendedReason: null,
+    penaltyType: decision.penaltyType,
+    penaltyReason: decision.penaltyReason,
   };
 }
 
@@ -122,6 +143,8 @@ export async function checkAndRecoverExpiredPenalties(): Promise<number> {
     data: {
       status: "ACTIVE",
       lastPenaltyEndedAt: now,
+      penaltyType: null,
+      penaltyReason: null,
     },
   });
   return result.count;
@@ -134,6 +157,8 @@ export async function suspendKey(apiKeyId: string, reason: string): Promise<void
       status: "SUSPENDED",
       suspendedReason: reason,
       manuallyDisabled: false,
+      penaltyType: null,
+      penaltyReason: null,
     },
   });
 }
@@ -149,6 +174,8 @@ export async function reactivateKey(apiKeyId: string): Promise<void> {
       lastPenaltyEndedAt: null,
       consecutiveFailures: 0,
       manuallyDisabled: false,
+      penaltyType: null,
+      penaltyReason: null,
     },
   });
 }
@@ -184,6 +211,8 @@ export async function resetPenalty(apiKeyId: string): Promise<void> {
       lastPenaltyEndedAt: null,
       consecutiveFailures: 0,
       suspendedReason: null,
+      penaltyType: null,
+      penaltyReason: null,
     },
   });
 }
@@ -229,6 +258,8 @@ export async function setKeyActive(apiKeyId: string): Promise<void> {
       consecutiveFailures: 0,
       suspendedReason: null,
       manuallyDisabled: false,
+      penaltyType: null,
+      penaltyReason: null,
     },
   });
 }

@@ -39,6 +39,8 @@ interface ApiKeyItem {
   secretEncrypted: string;
   penaltyLevel: number;
   penaltyExpiresAt: string | null;
+  penaltyType: string | null;
+  penaltyReason: string | null;
   suspendedReason: string | null;
   manuallyDisabled: boolean;
   consecutiveFailures: number;
@@ -66,10 +68,12 @@ interface ProviderDetail {
   notes: string | null;
 }
 
-function StatusChip({ status, penaltyLevel, penaltyExpiresAt, suspendedReason }: {
+function StatusChip({ status, penaltyLevel, penaltyExpiresAt, penaltyType, penaltyReason, suspendedReason }: {
   status: string;
   penaltyLevel: number;
   penaltyExpiresAt: string | null;
+  penaltyType: string | null;
+  penaltyReason: string | null;
   suspendedReason: string | null;
 }) {
   if (status === "ACTIVE") {
@@ -81,10 +85,16 @@ function StatusChip({ status, penaltyLevel, penaltyExpiresAt, suspendedReason }:
       : 0;
     const mins = Math.floor(remaining / 60);
     const secs = remaining % 60;
+    const typeLabel =
+      penaltyType === "PRE_DEFINED"
+        ? `Pre-defined${penaltyReason ? ` · ${penaltyReason}` : ""}`
+        : penaltyType === "VARIABLE"
+          ? `Variable Lv.${penaltyLevel}`
+          : `Lv.${penaltyLevel}`;
     return (
       <Badge variant="warning">
         <AlertTriangle className="mr-1 h-3 w-3" />
-        Penalized Lv.{penaltyLevel} ({mins}m {secs}s)
+        Penalized {typeLabel} ({mins}m {secs}s)
       </Badge>
     );
   }
@@ -316,7 +326,7 @@ export default function ProviderDetailPage() {
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-sm">{k.label}</span>
-                      <StatusChip status={k.status} penaltyLevel={k.penaltyLevel} penaltyExpiresAt={k.penaltyExpiresAt} suspendedReason={k.suspendedReason} />
+                      <StatusChip status={k.status} penaltyLevel={k.penaltyLevel} penaltyExpiresAt={k.penaltyExpiresAt} penaltyType={k.penaltyType} penaltyReason={k.penaltyReason} suspendedReason={k.suspendedReason} />
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <span>sk-••••{k.secretEncrypted ? k.secretEncrypted.slice(-4) : "????"}</span>
