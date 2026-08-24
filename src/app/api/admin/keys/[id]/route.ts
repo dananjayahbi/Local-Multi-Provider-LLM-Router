@@ -20,6 +20,7 @@ export async function PUT(
       tps, timeToFirstTokenMs, contextWindow,
       cacheCapable, cacheDiscountFactor,
       autoCalibration,
+      maxRpmLimit, maxTpmLimit, maxRpdLimit, maxTpdLimit,
     } = body;
 
     const parsed = (fieldName: any, value: unknown, allowFloat = false) => {
@@ -42,6 +43,14 @@ export async function PUT(
     if (ttftP.error) return NextResponse.json({ error: ttftP.error }, { status: 400 });
     const ctxP = parsed("contextWindow", contextWindow);
     if (ctxP.error) return NextResponse.json({ error: ctxP.error }, { status: 400 });
+    const maxRpm = parsed("maxRpmLimit", maxRpmLimit);
+    if (maxRpm.error) return NextResponse.json({ error: maxRpm.error }, { status: 400 });
+    const maxTpm = parsed("maxTpmLimit", maxTpmLimit);
+    if (maxTpm.error) return NextResponse.json({ error: maxTpm.error }, { status: 400 });
+    const maxRpd = parsed("maxRpdLimit", maxRpdLimit);
+    if (maxRpd.error) return NextResponse.json({ error: maxRpd.error }, { status: 400 });
+    const maxTpd = parsed("maxTpdLimit", maxTpdLimit);
+    if (maxTpd.error) return NextResponse.json({ error: maxTpd.error }, { status: 400 });
 
     const apiKey = await updateApiKey(id, {
       label,
@@ -57,6 +66,10 @@ export async function PUT(
       cacheDiscountFactor:
         cacheDiscountFactor != null ? Number(cacheDiscountFactor) : undefined,
       autoCalibration,
+      maxRpmLimit: maxRpm.value,
+      maxTpmLimit: maxTpm.value,
+      maxRpdLimit: maxRpd.value,
+      maxTpdLimit: maxTpd.value,
     });
 
     // Auto-calibration lifecycle: seed baseline on enable, clear on disable,

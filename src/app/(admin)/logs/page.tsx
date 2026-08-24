@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,37 +18,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  RefreshCw,
-  Filter,
-} from "lucide-react";
-
-interface LogEntry {
-  id: string;
-  outcome: string;
-  errorClassification: string | null;
-  httpStatus: number | null;
-  latencyMs: number;
-  promptTokens: number | null;
-  completionTokens: number | null;
-  requestedVirtualModel: string;
-  tier: string | null;
-  createdAt: string;
-  apiKey?: { id: string; label: string; provider: { name: string } } | null;
-  pool?: { id: string; name: string } | null;
-  providerModel?: { id: string; displayName: string } | null;
-}
-
-interface LogsResponse {
-  logs: LogEntry[];
-  total: number;
-  page: number;
-  pageSize: number;
-  totalPages: number;
-}
+import { ChevronDown, ChevronLeft, ChevronRight, RefreshCw, Filter } from "lucide-react";
+import { useLogsPolling } from "@/components/logs/use-logs-polling";
+import { LogDetailPanel, type LogEntry } from "@/components/logs/log-detail-panel";
 
 function OutcomeBadge({ outcome, classification }: { outcome: string; classification: string | null }) {
   if (outcome === "SUCCESS") return <Badge variant="success">Success</Badge>;
@@ -56,30 +28,10 @@ function OutcomeBadge({ outcome, classification }: { outcome: string; classifica
 }
 
 export default function LogsPage() {
-  const [data, setData] = useState<LogsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState({
-    outcome: "",
-    errorClassification: "",
-  });
+  const [filters, setFilters] = useState({ outcome: "", errorClassification: "" });
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-
-  const loadLogs = async (p: number = page) => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    params.set("page", String(p));
-    params.set("pageSize", "50");
-    if (filters.outcome) params.set("outcome", filters.outcome);
-    if (filters.errorClassification) params.set("errorClassification", filters.errorClassification);
-
-    const res = await fetch(`/api/admin/logs?${params.toString()}`);
-    const result = await res.json();
-    setData(result);
-    setLoading(false);
-  };
-
-  useEffect(() => { loadLogs(page); }, [page, filters]);
+  const { data, loading, lastUpdated, refresh } = useLogsPolling(page, filters);
 
   const toggleExpand = (id: string) => {
     setExpandedRows((prev) => {
@@ -95,10 +47,17 @@ export default function LogsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Logs</h1>
-          <p className="text-muted-foreground">Request history and diagnostics</p>
+          <p className="text-muted-foreground">
+            Request history and diagnostics{" "}
+            {lastUpdated > 0 && (
+              <span className="text-xs text-muted-foreground/70">
+                · live · updated {new Date(lastUpdated).toLocaleTimeString()}
+              </span>
+            )}
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          <Select value={filters.outcome} onValueChange={(v) => setFilters({ ...filters, outcome: v })}>
+          <Select value={filters.outcome} onValueChange={(v) => setFilters((f) => ({ ...f, outcome: v }))}>
             <SelectTrigger className="w-32">
               <Filter className="mr-1 h-3 w-3" />
               <SelectValue placeholder="All" />
@@ -109,7 +68,7 @@ export default function LogsPage() {
               <SelectItem value="FAILURE">Failure</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={filters.errorClassification} onValueChange={(v) => setFilters({ ...filters, errorClassification: v })}>
+          <Select value={filters.errorClassification} onValueChange={(v) => setFilters((f) => ({ ...f, errorClassification: v }))}>
             <SelectTrigger className="w-40">
               <SelectValue placeholder="All errors" />
             </SelectTrigger>
@@ -123,13 +82,13 @@ export default function LogsPage() {
               <SelectItem value="INVALID_REQUEST">Invalid Request</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="icon" onClick={() => loadLogs(page)}>
+          <Button variant="outline" size="icon" onClick={() => refresh()}>
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
-      {loading ? (
+      {loading && !data ? (
         <div className="text-muted-foreground">Loading...</div>
       ) : !data || data.logs.length === 0 ? (
         <div className="text-muted-foreground py-12 text-center">No request logs yet.</div>
@@ -149,7 +108,7 @@ export default function LogsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.logs.map((log) => (
+              {data.logs.map((log: LogEntry) => (
                 <React.Fragment key={log.id}>
                   <TableRow className="cursor-pointer" onClick={() => toggleExpand(log.id)}>
                     <TableCell>
@@ -175,41 +134,8 @@ export default function LogsPage() {
                   </TableRow>
                   {expandedRows.has(log.id) && (
                     <TableRow key={`${log.id}-expand`}>
-                      <TableCell colSpan={8} className="bg-muted/30">
-                        <div className="grid grid-cols-4 gap-2 text-xs py-2 px-4">
-                          <div>
-                            <span className="text-muted-foreground">HTTP Status:</span>{" "}
-                            {log.httpStatus || "N/A"}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Pool:</span>{" "}
-                            {log.pool?.name || "Direct"}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Model:</span>{" "}
-                            {log.providerModel?.displayName || "N/A"}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">API Key:</span>{" "}
-                            {log.apiKey?.label || "?"}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Prompt Tokens:</span>{" "}
-                            {log.promptTokens ?? "?"}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Completion Tokens:</span>{" "}
-                            {log.completionTokens ?? "?"}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Error:</span>{" "}
-                            {log.errorClassification || "None"}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Tier:</span>{" "}
-                            {log.tier || "N/A"}
-                          </div>
-                        </div>
+                      <TableCell colSpan={8} className="bg-muted/30 p-0">
+                        <LogDetailPanel log={log} />
                       </TableCell>
                     </TableRow>
                   )}
@@ -223,20 +149,10 @@ export default function LogsPage() {
               Page {data.page} of {data.totalPages} ({data.total} total)
             </span>
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={data.page <= 1}
-                onClick={() => setPage(data.page - 1)}
-              >
+              <Button variant="outline" size="sm" disabled={data.page <= 1} onClick={() => setPage(data.page - 1)}>
                 <ChevronLeft className="h-4 w-4" />
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={data.page >= data.totalPages}
-                onClick={() => setPage(data.page + 1)}
-              >
+              <Button variant="outline" size="sm" disabled={data.page >= data.totalPages} onClick={() => setPage(data.page + 1)}>
                 <ChevronRight className="h-4 w-4" />
               </Button>
             </div>

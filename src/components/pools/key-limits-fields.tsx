@@ -18,6 +18,11 @@ export interface KeyLimitsForm {
   cacheCapable: boolean;
   cacheDiscountFactor: string;
   autoCalibration: boolean;
+  // Absolute max (hard cap) the auto-calibrator never exceeds. Empty = none.
+  maxRpmLimit: string;
+  maxTpmLimit: string;
+  maxRpdLimit: string;
+  maxTpdLimit: string;
 }
 
 /** Fresh blank limits form (all numeric fields empty = unlimited). */
@@ -33,6 +38,10 @@ export function emptyKeyLimitsForm(): KeyLimitsForm {
     cacheCapable: false,
     cacheDiscountFactor: "0.1",
     autoCalibration: false,
+    maxRpmLimit: "",
+    maxTpmLimit: "",
+    maxRpdLimit: "",
+    maxTpdLimit: "",
   };
 }
 
@@ -51,6 +60,10 @@ export function keyLimitsToPayload(form: KeyLimitsForm) {
     cacheCapable: form.cacheCapable,
     cacheDiscountFactor: flt(form.cacheDiscountFactor),
     autoCalibration: form.autoCalibration,
+    maxRpmLimit: num(form.maxRpmLimit),
+    maxTpmLimit: num(form.maxTpmLimit),
+    maxRpdLimit: num(form.maxRpdLimit),
+    maxTpdLimit: num(form.maxTpdLimit),
   };
 }
 
@@ -66,6 +79,10 @@ export function keyLimitsFromApiKey(key: {
   cacheCapable?: boolean;
   cacheDiscountFactor?: number;
   autoCalibration?: boolean;
+  maxRpmLimit?: number | null;
+  maxTpmLimit?: number | null;
+  maxRpdLimit?: number | null;
+  maxTpdLimit?: number | null;
 }): KeyLimitsForm {
   return {
     rpmLimit: key.rpmLimit != null ? String(key.rpmLimit) : "",
@@ -78,6 +95,10 @@ export function keyLimitsFromApiKey(key: {
     cacheCapable: key.cacheCapable ?? false,
     cacheDiscountFactor: key.cacheDiscountFactor != null ? String(key.cacheDiscountFactor) : "0.1",
     autoCalibration: key.autoCalibration ?? false,
+    maxRpmLimit: key.maxRpmLimit != null ? String(key.maxRpmLimit) : "",
+    maxTpmLimit: key.maxTpmLimit != null ? String(key.maxTpmLimit) : "",
+    maxRpdLimit: key.maxRpdLimit != null ? String(key.maxRpdLimit) : "",
+    maxTpdLimit: key.maxTpdLimit != null ? String(key.maxTpdLimit) : "",
   };
 }
 
@@ -91,7 +112,7 @@ export function KeyLimitsFields({ value, onChange }: KeyLimitsFieldsProps) {
   const set = (patch: Partial<KeyLimitsForm>) => onChange({ ...value, ...patch });
 
   const numField = (
-    key: keyof Pick<KeyLimitsForm, "rpmLimit" | "tpmLimit" | "rpdLimit" | "tpdLimit" | "timeToFirstTokenMs" | "contextWindow">,
+    key: keyof Pick<KeyLimitsForm, "rpmLimit" | "tpmLimit" | "rpdLimit" | "tpdLimit" | "timeToFirstTokenMs" | "contextWindow" | "maxRpmLimit" | "maxTpmLimit" | "maxRpdLimit" | "maxTpdLimit">,
     label: string
   ) => (
     <div className="space-y-2">
@@ -114,7 +135,22 @@ export function KeyLimitsFields({ value, onChange }: KeyLimitsFieldsProps) {
         {numField("rpdLimit", "RPD Limit (requests/day)")}
         {numField("tpdLimit", "TPD Limit (tokens/day)")}
       </div>
-      <div className="grid grid-cols-3 gap-4">
+      {/* Absolute max (hard cap) — the auto-calibrator never exceeds these. */}
+      <div className="rounded-md border bg-muted/20 p-3">
+        <Label className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Absolute Max (auto-calibration hard cap)
+        </Label>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Optional ceilings the auto-calibrator will never scale up beyond.
+          Empty = no hard cap.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          {numField("maxRpmLimit", "Max RPM")}
+          {numField("maxTpmLimit", "Max TPM")}
+          {numField("maxRpdLimit", "Max RPD")}
+          {numField("maxTpdLimit", "Max TPD")}
+        </div>
+      </div>      <div className="grid grid-cols-3 gap-4">
         <div className="space-y-2">
           <Label>Tokens / sec</Label>
           <Input

@@ -319,7 +319,8 @@ export async function orchestrate(
           }
         }
 
-        // Log failure
+        // Log failure — capture both sides of the error so /logs can expand:
+        // what the PROVIDER returned and what the GATEWAY surfaced to the client.
         await createRequestLog({
           poolId: logPoolId,
           apiKeyId: key.apiKeyId,
@@ -330,6 +331,9 @@ export async function orchestrate(
           httpStatus: response.status,
           latencyMs,
           requestedVirtualModel: canonicalRequest.model,
+          providerErrorMessage: classified.providerErrorMessage,
+          providerErrorCode: classified.providerErrorCode,
+          gatewayErrorMessage: classified.providerErrorMessage,
         });
 
         errors.push({
@@ -438,7 +442,7 @@ export async function orchestrate(
         });
       }
 
-      // Log failure
+      // Log failure — capture the network/provider message so /logs can expand.
       await createRequestLog({
         poolId: logPoolId,
         apiKeyId: key.apiKeyId,
@@ -449,6 +453,9 @@ export async function orchestrate(
         httpStatus: 0,
         latencyMs,
         requestedVirtualModel: canonicalRequest.model,
+        providerErrorMessage: message,
+        providerErrorCode: isNetworkError ? "NETWORK" : null,
+        gatewayErrorMessage: message,
       });
 
       errors.push({
@@ -607,6 +614,11 @@ async function* streamResponse(
       promptTokens: streamUsage.promptTokens ?? null,
       completionTokens: streamUsage.completionTokens ?? null,
       requestedVirtualModel: meta.virtualModel,
+      // An empty response is a gateway-side condition: the provider returned
+      // HTTP 200 but nothing usable. Surface it as the gateway error message.
+      ...(outcome === "EMPTY_RESPONSE"
+        ? { gatewayErrorMessage: "Provider finished stream with no usable content/reasoning/tool-calls." }
+        : {}),
     });
   }
 }

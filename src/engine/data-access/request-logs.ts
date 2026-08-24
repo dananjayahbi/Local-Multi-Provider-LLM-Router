@@ -14,6 +14,10 @@ export interface CreateRequestLogInput {
   promptTokens?: number | null;
   completionTokens?: number | null;
   requestedVirtualModel: string;
+  // Failure detail surfaced in the /logs expansion:
+  providerErrorMessage?: string | null;
+  providerErrorCode?: string | null;
+  gatewayErrorMessage?: string | null;
 }
 
 export async function createRequestLog(data: CreateRequestLogInput) {
@@ -61,6 +65,7 @@ export async function getLogs(filters: LogFilters = {}) {
         pool: { select: { id: true, name: true } },
         providerModel: { select: { id: true, displayName: true } },
       },
+      // Surface provider + gateway error detail for the /logs expansion.
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,

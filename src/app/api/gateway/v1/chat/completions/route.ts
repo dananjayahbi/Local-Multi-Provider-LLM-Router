@@ -508,6 +508,9 @@ export async function POST(request: NextRequest) {
         httpStatus: 0,
         latencyMs,
         requestedVirtualModel: requestedModel,
+        providerErrorMessage: message,
+        providerErrorCode: "NETWORK",
+        gatewayErrorMessage: message,
       });
 
       return NextResponse.json(

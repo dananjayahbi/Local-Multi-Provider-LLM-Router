@@ -21,6 +21,11 @@ export interface ApiKeyInput {
   cacheCapable?: boolean;
   cacheDiscountFactor?: number;
   autoCalibration?: boolean;
+  // Absolute max (hard cap) the auto-calibrator will never exceed. null = none.
+  maxRpmLimit?: number | null;
+  maxTpmLimit?: number | null;
+  maxRpdLimit?: number | null;
+  maxTpdLimit?: number | null;
 }
 
 export async function getKeysByProvider(providerId: string) {
@@ -85,6 +90,10 @@ export async function createApiKey(
       cacheCapable: data.cacheCapable ?? true,
       cacheDiscountFactor: data.cacheDiscountFactor ?? 0.1,
       autoCalibration: data.autoCalibration ?? false,
+      maxRpmLimit: data.maxRpmLimit ?? null,
+      maxTpmLimit: data.maxTpmLimit ?? null,
+      maxRpdLimit: data.maxRpdLimit ?? null,
+      maxTpdLimit: data.maxTpdLimit ?? null,
     },
   });
 }
@@ -103,6 +112,10 @@ export async function updateApiKey(id: string, data: Partial<ApiKeyInput>) {
   if (data.cacheCapable !== undefined) updateData.cacheCapable = data.cacheCapable;
   if (data.cacheDiscountFactor !== undefined) updateData.cacheDiscountFactor = data.cacheDiscountFactor;
   if (data.autoCalibration !== undefined) updateData.autoCalibration = data.autoCalibration;
+  if (data.maxRpmLimit !== undefined) updateData.maxRpmLimit = data.maxRpmLimit;
+  if (data.maxTpmLimit !== undefined) updateData.maxTpmLimit = data.maxTpmLimit;
+  if (data.maxRpdLimit !== undefined) updateData.maxRpdLimit = data.maxRpdLimit;
+  if (data.maxTpdLimit !== undefined) updateData.maxTpdLimit = data.maxTpdLimit;
   return prisma.apiKey.update({ where: { id }, data: updateData });
 }
 

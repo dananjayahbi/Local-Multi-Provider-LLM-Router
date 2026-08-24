@@ -33,6 +33,16 @@ export interface AutoCalibrationLimits {
   tpdLimit: number | null;
 }
 
+/** Per-key absolute max (hard cap). The auto-calibrator NEVER probes a limit
+ *  above the matching `max*` value, even if the baseline or AIMD would allow
+ *  it. null = no hard cap (unlimited). */
+export interface HardCapLimits {
+  maxRpmLimit: number | null;
+  maxTpmLimit: number | null;
+  maxRpdLimit: number | null;
+  maxTpdLimit: number | null;
+}
+
 export interface AutoCalibrationState {
   /** The user's claimed ceiling captured when auto-calibration was enabled
    *  (or the last time it was manually reset). Never exceeded. */
@@ -233,22 +243,39 @@ function currentLimits(key: {
   };
 }
 
+/** Read the per-key absolute max (hard cap) from the ApiKey record. */
+function readHardCap(key: Record<string, unknown>): HardCapLimits {
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && v > 0 ? v : v == null ? null : Number(v) > 0 ? Number(v) : null;
+  return {
+    maxRpmLimit: num(key.maxRpmLimit),
+    maxTpmLimit: num(key.maxTpmLimit),
+    maxRpdLimit: num(key.maxRpdLimit),
+    maxTpdLimit: num(key.maxTpdLimit),
+  };
+}
+
 /** Multiply a single limit down, respecting a floor and never below 1. */
 function scaleDown(value: number | null, floor: number): number | null {
   if (value == null || value <= 0) return value; // unlimited stays unlimited
   return Math.max(floor, Math.round(value * DECREASE_FACTOR));
 }
 
-/** Multiply up toward the baseline ceiling — never exceeds baseline. */
+/** Multiply up toward the baseline ceiling — never exceeds baseline and NEVER
+ *  exceeds the per-key hard cap (`max*`). */
 function scaleUp(
   current: number | null,
   baseline: number | null,
-  floor: number
+  floor: number,
+  hardCap: number | null = null
 ): number | null {
   if (current == null || current <= 0) return current; // unlimited stays unlimited
   if (baseline == null) return current; // no ceiling set → no probe limit
   const target = Math.round(current * INCREASE_FACTOR);
-  return Math.min(baseline, Math.max(floor, target));
+  const capped = Math.min(baseline, Math.max(floor, target));
+  // Never exceed the explicit hard cap.
+  if (hardCap != null && hardCap > 0) return Math.min(capped, hardCap);
+  return capped;
 }
 
 // ─── Public API used by the orchestrator ──────────────
@@ -392,16 +419,18 @@ export async function handleAutoCalibrationSuccess(
     return null;
   }
 
+  // Read the per-key hard cap so we can clamp any probe below it.
+  const hardCap = readHardCap(key);
   const current = currentLimits(key);
   const next: AutoCalibrationLimits = {
-    rpmLimit: scaleUp(current.rpmLimit, state.baseline.rpmLimit, MIN_RPM),
-    tpmLimit: scaleUp(current.tpmLimit, state.baseline.tpmLimit, MIN_TPM),
-    rpdLimit: scaleUp(current.rpdLimit, state.baseline.rpdLimit, MIN_RPD),
-    tpdLimit: scaleUp(current.tpdLimit, state.baseline.tpdLimit, MIN_TPD),
+    rpmLimit: scaleUp(current.rpmLimit, state.baseline.rpmLimit, MIN_RPM, hardCap.maxRpmLimit),
+    tpmLimit: scaleUp(current.tpmLimit, state.baseline.tpmLimit, MIN_TPM, hardCap.maxTpmLimit),
+    rpdLimit: scaleUp(current.rpdLimit, state.baseline.rpdLimit, MIN_RPD, hardCap.maxRpdLimit),
+    tpdLimit: scaleUp(current.tpdLimit, state.baseline.tpdLimit, MIN_TPD, hardCap.maxTpdLimit),
   };
 
   if (JSON.stringify(next) === JSON.stringify(current)) {
-    // Already at baseline; keep a fresh streak but do not churn writes.
+    // Already at baseline (or hard cap); keep a fresh streak but do not churn writes.
     state.consecutiveSuccesses = 0;
     await writeAutoCalibrationState(apiKeyId, state);
     return null;

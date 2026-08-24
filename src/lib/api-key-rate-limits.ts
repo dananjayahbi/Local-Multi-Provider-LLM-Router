@@ -7,7 +7,11 @@ export type RateLimitFieldName =
   | "tpmLimit"
   | "rpdLimit"
   | "tpdLimit"
-  | "contextWindow";
+  | "contextWindow"
+  | "maxRpmLimit"
+  | "maxTpmLimit"
+  | "maxRpdLimit"
+  | "maxTpdLimit";
 
 interface ParseRateLimitOptions {
   mode: ParseMode;

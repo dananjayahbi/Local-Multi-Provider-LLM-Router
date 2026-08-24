@@ -25,6 +25,10 @@ export interface RateLimitKey {
   contextWindow: number | null;
   cacheCapable?: boolean;
   autoCalibration?: boolean;
+  maxRpmLimit?: number | null;
+  maxTpmLimit?: number | null;
+  maxRpdLimit?: number | null;
+  maxTpdLimit?: number | null;
 }
 
 interface Props {
@@ -33,7 +37,7 @@ interface Props {
   onSaved: () => void;
 }
 
-const EMPTY = { rpmLimit: "", tpmLimit: "", rpdLimit: "", tpdLimit: "", tps: "", timeToFirstTokenMs: "", contextWindow: "", autoCalibration: false };
+const EMPTY = { rpmLimit: "", tpmLimit: "", rpdLimit: "", tpdLimit: "", tps: "", timeToFirstTokenMs: "", contextWindow: "", autoCalibration: false, maxRpmLimit: "", maxTpmLimit: "", maxRpdLimit: "", maxTpdLimit: "" };
 
 const fmt = (v: number | null) => (v != null ? String(v) : "");
 
@@ -54,6 +58,10 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
         timeToFirstTokenMs: fmt(keyData.timeToFirstTokenMs),
         contextWindow: fmt(keyData.contextWindow),
         autoCalibration: keyData.autoCalibration ?? false,
+        maxRpmLimit: fmt(keyData.maxRpmLimit ?? null),
+        maxTpmLimit: fmt(keyData.maxTpmLimit ?? null),
+        maxRpdLimit: fmt(keyData.maxRpdLimit ?? null),
+        maxTpdLimit: fmt(keyData.maxTpdLimit ?? null),
       });
     }
   }, [keyData]);
@@ -74,6 +82,10 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
           timeToFirstTokenMs: form.timeToFirstTokenMs ? Number(form.timeToFirstTokenMs) : null,
           contextWindow: form.contextWindow ? Number(form.contextWindow) : null,
           autoCalibration: form.autoCalibration,
+          maxRpmLimit: form.maxRpmLimit ? Number(form.maxRpmLimit) : null,
+          maxTpmLimit: form.maxTpmLimit ? Number(form.maxTpmLimit) : null,
+          maxRpdLimit: form.maxRpdLimit ? Number(form.maxRpdLimit) : null,
+          maxTpdLimit: form.maxTpdLimit ? Number(form.maxTpdLimit) : null,
         }),
       });
       if (res.ok) {
@@ -120,6 +132,36 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
               />
             </div>
           ))}
+        </div>
+
+        {/* Absolute max (hard cap) — the auto-calibrator never exceeds these. */}
+        <div className="rounded-md border bg-muted/20 p-3">
+          <Label className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Absolute Max (auto-calibration hard cap)
+          </Label>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Optional ceilings the auto-calibrator will never scale up beyond.
+            Leave blank for no hard cap.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            {(
+              [
+                ["maxRpmLimit", "Max RPM"],
+                ["maxTpmLimit", "Max TPM"],
+                ["maxRpdLimit", "Max RPD"],
+                ["maxTpdLimit", "Max TPD"],
+              ] as const
+            ).map(([field, label]) => (
+              <div key={field} className="space-y-1">
+                <Label className="text-xs">{label}</Label>
+                <Input
+                  placeholder="no cap"
+                  value={form[field]}
+                  onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Auto-calibration toggle */}

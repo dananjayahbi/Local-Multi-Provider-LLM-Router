@@ -29,6 +29,7 @@ export async function POST(
       tps, timeToFirstTokenMs, contextWindow,
       cacheCapable, cacheDiscountFactor,
       autoCalibration,
+      maxRpmLimit, maxTpmLimit, maxRpdLimit, maxTpdLimit,
     } = body;
 
     if (!label || !secret) {
@@ -62,6 +63,14 @@ export async function POST(
     if (ttftP.error) return NextResponse.json({ error: ttftP.error }, { status: 400 });
     const ctxP = parsed("contextWindow", contextWindow);
     if (ctxP.error) return NextResponse.json({ error: ctxP.error }, { status: 400 });
+    const maxRpm = parsed("maxRpmLimit", maxRpmLimit);
+    if (maxRpm.error) return NextResponse.json({ error: maxRpm.error }, { status: 400 });
+    const maxTpm = parsed("maxTpmLimit", maxTpmLimit);
+    if (maxTpm.error) return NextResponse.json({ error: maxTpm.error }, { status: 400 });
+    const maxRpd = parsed("maxRpdLimit", maxRpdLimit);
+    if (maxRpd.error) return NextResponse.json({ error: maxRpd.error }, { status: 400 });
+    const maxTpd = parsed("maxTpdLimit", maxTpdLimit);
+    if (maxTpd.error) return NextResponse.json({ error: maxTpd.error }, { status: 400 });
 
     const apiKey = await createApiKey(id, {
       label,
@@ -77,6 +86,10 @@ export async function POST(
       cacheDiscountFactor:
         cacheDiscountFactor != null ? Number(cacheDiscountFactor) : 0.1,
       autoCalibration: autoCalibration ?? false,
+      maxRpmLimit: maxRpm.value ?? null,
+      maxTpmLimit: maxTpm.value ?? null,
+      maxRpdLimit: maxRpd.value ?? null,
+      maxTpdLimit: maxTpd.value ?? null,
     });
 
     // Optionally attach this provider-level key to a pool immediately (task 05).

@@ -51,6 +51,16 @@ model ApiKey {
   cacheCapable      Boolean   @default(true)
   cacheDiscountFactor Float   @default(0.1) // cached-token price fraction
 
+  // ── absolute max (hard cap) parameters ──
+  // Optional per-key ceilings the AUTO-CALIBRATOR will never exceed when it
+  // probes a limit upward. Distinct from the operating limit above: even if
+  // `rpmLimit` is null (∞) or the calibrator wants to raise it, it can never
+  // go higher than the matching `max*` value. null = no extra hard cap.
+  maxRpmLimit       Int?
+  maxTpmLimit       Int?
+  maxRpdLimit       Int?
+  maxTpdLimit       Int?
+
   status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED, TESTING, COOLDOWN
   manuallyDisabled  Boolean   @default(false)
   penaltyLevel      Int       @default(0)
@@ -169,6 +179,14 @@ model RequestLog {
   completionTokens       Int?
   requestedVirtualModel  String
   createdAt              DateTime @default(now())
+
+  // ── failure detail (task: detailed error expansion) ──
+  // What the PROVIDER actually returned (raw message + code), and the message
+  // the GATEWAY surfaced back to the client (e.g. Copilot). Stored so the
+  // /logs row can expand to show both sides of an error.
+  providerErrorMessage   String?
+  providerErrorCode      String?
+  gatewayErrorMessage    String?
 
   pool          Pool?          @relation(fields: [poolId], references: [id], onDelete: SetNull)
   apiKey        ApiKey?        @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
