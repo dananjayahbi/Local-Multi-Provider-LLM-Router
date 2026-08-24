@@ -26,6 +26,7 @@ import { createRequestLog } from "./data-access/request-logs";
 import {
   waitForApiKeyRateLimit,
   settleApiKeyRateLimit,
+  releaseApiKeyRateLimit,
   ApiKeyRateLimitReservation,
 } from "./rate-limit/api-key-rate-limiter";
 import { estimateTokensForRateLimit } from "./rate-limit/token-estimator";
@@ -283,10 +284,20 @@ export async function orchestrate(
     const tierLabel = key.status === "PENALIZED" ? "TIER_2" : "TIER_1";
     const startTime = Date.now();
 
+    // Declared OUTSIDE the try so the catch can release it on failure. If the
+    // key has no limits this stays a no-op reservation (empty id → no-op).
+    let reservation: ApiKeyRateLimitReservation = {
+      apiKeyId: key.apiKeyId,
+      reservationId: "",
+      reservedTokens: 0,
+      hasTpmLimit: false,
+      requestTs: 0,
+    };
+
     try {
       // Rate-limit queue: wait until this key has RPM/TPM capacity
       const estimatedTokens = estimateTokensForRateLimit(canonicalRequest);
-      let reservation: ApiKeyRateLimitReservation = {
+      reservation = {
         apiKeyId: key.apiKeyId,
         reservationId: "",
         reservedTokens: estimatedTokens,
@@ -395,6 +406,12 @@ export async function orchestrate(
           httpStatus: response.status,
           message: classified.providerErrorMessage,
         });
+
+        // The upstream rejected the request, so the reservation we took did
+        // NOT consume real provider capacity. Release it so the local counter
+        // doesn't inflate and cause unnecessary throttling. (The penalty + 
+        // auto-calibration engines already decide how to treat this key.)
+        await releaseApiKeyRateLimit(reservation);
 
         // Don't retry invalid requests
         if (classified.classification === "INVALID_REQUEST") {
@@ -517,6 +534,10 @@ export async function orchestrate(
         httpStatus: 0,
         message,
       });
+
+      // Network/unknown errors never consumed provider capacity — release the
+      // reservation so the local RPM/TPM counter isn't inflated.
+      await releaseApiKeyRateLimit(reservation);
 
       continue;
     }

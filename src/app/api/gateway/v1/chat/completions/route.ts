@@ -23,6 +23,7 @@ import { normalizeCanonicalResponse } from "@/engine/response-normalizer";
 import {
   waitForApiKeyRateLimit,
   settleApiKeyRateLimit,
+  releaseApiKeyRateLimit,
 } from "@/engine/rate-limit/api-key-rate-limiter";
 import { estimateTokensForRateLimit } from "@/engine/rate-limit/token-estimator";
 import { takePendingInjection } from "@/engine/routing/conversation";
@@ -432,6 +433,11 @@ export async function POST(request: NextRequest) {
           requestedVirtualModel: requestedModel,
         });
 
+        // Upstream rejected it — release the reservation so the local counter
+        // isn't inflated (no unnecessary throttling for a key that never
+        // reached the provider).
+        await releaseApiKeyRateLimit(reservation);
+
         return NextResponse.json(
           { error: { message: classified.providerErrorMessage, type: classified.classification } },
           { status: response.status }
@@ -552,6 +558,10 @@ export async function POST(request: NextRequest) {
         providerErrorCode: "NETWORK",
         gatewayErrorMessage: message,
       });
+
+      // Network error — release the reservation so no stale counter inflates
+      // the key's local RPM/TPM and causes unnecessary throttling.
+      await releaseApiKeyRateLimit(reservation);
 
       return NextResponse.json(
         { error: { message, type: "network_error" } },

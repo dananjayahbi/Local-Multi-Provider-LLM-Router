@@ -224,6 +224,52 @@ export async function settleApiKeyRateLimit(
   await task;
 }
 
+/**
+ * Release a reservation that did NOT consume provider capacity — called on
+ * failure/abort paths (provider HTTP error, network error, invalid request).
+ *
+ * At reservation time `waitForApiKeyRateLimit` already pushed a request
+ * timestamp + estimated token records (and daily records) into the in-memory
+ * window. On success we keep them and settle to actual usage. On failure the
+ * upstream consumed ~nothing, so leaving them would INFLATE the local RPM/TPM/
+ * RPD/TPD counters and make the gateway throttle unnecessarily — the exact
+ * "over-synced" problem we want to avoid. Releasing restores the capacity so
+ * the penalty/auto-calibration engines (not a stale local counter) decide how
+ * the key is treated.
+ */
+export async function releaseApiKeyRateLimit(
+  reservation: ApiKeyRateLimitReservation
+): Promise<void> {
+  if (!reservation.reservationId) {
+    return;
+  }
+
+  const state = getKeyState(reservation.apiKeyId);
+  const remove = () => {
+    const now = Date.now();
+    pruneExpired(state, now);
+
+    // Remove the single request timestamp captured for this reservation.
+    const rIdx = state.requestTimestamps.indexOf(reservation.requestTs);
+    if (rIdx >= 0) state.requestTimestamps.splice(rIdx, 1);
+
+    const dIdx = state.dailyRequestTs.indexOf(reservation.requestTs);
+    if (dIdx >= 0) state.dailyRequestTs.splice(dIdx, 1);
+
+    // Remove the estimated token records by reservation id.
+    state.tokenRecords = state.tokenRecords.filter(
+      (r) => r.reservationId !== reservation.reservationId
+    );
+    state.dailyTokenRecords = state.dailyTokenRecords.filter(
+      (r) => r.reservationId !== reservation.reservationId
+    );
+  };
+
+  const task = state.tail.then(remove, remove);
+  state.tail = task.then(() => undefined, () => undefined);
+  await task;
+}
+
 // ─── Usage Snapshot for the caching-aware selector ─────
 // Maps in-memory state to the playground `KeyUsage` shape so the
 // (tested) selector can score utilization across all limit types.
