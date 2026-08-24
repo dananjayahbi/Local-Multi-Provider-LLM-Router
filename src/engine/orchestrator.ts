@@ -29,6 +29,7 @@ import {
   releaseApiKeyRateLimit,
   ApiKeyRateLimitReservation,
 } from "./rate-limit/api-key-rate-limiter";
+import { recordFlowEvent } from "./rate-limit/flow-tracker";
 import { estimateTokensForRateLimit } from "./rate-limit/token-estimator";
 import { normalizeCanonicalResponse } from "./response-normalizer";
 import {
@@ -159,6 +160,20 @@ export async function orchestrate(
 
   const allCandidates = buildCandidates(resolvedPool);
   const errors: AttemptError[] = [];
+
+  // Correlate every pipeline transition for this inbound gateway request so
+  // the /usage data-flow illustration can render one request as it moves
+  // arrived → queued → assigned → success/failed.
+  const requestId = crypto.randomUUID();
+  recordFlowEvent({
+    requestId,
+    poolId: resolvedPool.id,
+    apiKeyId: null,
+    poolName: resolvedPool.name,
+    apiKeyLabel: null,
+    providerName: null,
+    stage: "arrived",
+  });
 
   if (allCandidates.length === 0) {
     // No routable/healthy key remains. This is NOT a hard failure — the caller
@@ -310,11 +325,47 @@ export async function orchestrate(
       );
 
       if (hasLimits) {
+        // The request is HELD in the gateway waiting for this key's rate-limit
+        // window to free up. Mark it queued (this is the "holding" signal).
+        recordFlowEvent({
+          requestId,
+          poolId: resolvedPool.id,
+          apiKeyId: key.apiKeyId,
+          poolName: resolvedPool.name,
+          apiKeyLabel: key.apiKeyLabel,
+          providerName: member.providerName,
+          stage: "queued",
+        });
+
         reservation = await waitForApiKeyRateLimit({
           apiKeyId: key.apiKeyId,
           rpmLimit: key.rpmLimit,
           tpmLimit: key.tpmLimit,
           requestedTokens: estimatedTokens,
+        });
+
+        // Capacity granted — the upstream call is now in flight.
+        recordFlowEvent({
+          requestId,
+          poolId: resolvedPool.id,
+          apiKeyId: key.apiKeyId,
+          poolName: resolvedPool.name,
+          apiKeyLabel: key.apiKeyLabel,
+          providerName: member.providerName,
+          stage: "assigned",
+          tokens: estimatedTokens,
+        });
+      } else {
+        // No limits — nothing is held locally; the call goes straight out.
+        recordFlowEvent({
+          requestId,
+          poolId: resolvedPool.id,
+          apiKeyId: key.apiKeyId,
+          poolName: resolvedPool.name,
+          apiKeyLabel: key.apiKeyLabel,
+          providerName: member.providerName,
+          stage: "assigned",
+          tokens: estimatedTokens,
         });
       }
 
@@ -413,6 +464,17 @@ export async function orchestrate(
         // auto-calibration engines already decide how to treat this key.)
         await releaseApiKeyRateLimit(reservation);
 
+        recordFlowEvent({
+          requestId,
+          poolId: resolvedPool.id,
+          apiKeyId: key.apiKeyId,
+          poolName: resolvedPool.name,
+          apiKeyLabel: key.apiKeyLabel,
+          providerName: member.providerName,
+          stage: "failed",
+          latencyMs,
+        });
+
         // Don't retry invalid requests
         if (classified.classification === "INVALID_REQUEST") {
           return { success: false, errors };
@@ -448,7 +510,9 @@ export async function orchestrate(
       }
 
       if (canonicalRequest.stream) {
-        // Return stream as async generator
+        // Return stream as async generator. The streamResponse finally block
+        // emits the terminal success/failed flow event AFTER the stream ends so
+        // the animation keeps the request in-flight for the whole stream.
         const streamGen = streamResponse(response, adapter, {
           poolId: logPoolId,
           apiKeyId: key.apiKeyId,
@@ -458,6 +522,13 @@ export async function orchestrate(
           startTime,
           httpStatus: response.status,
           reservation,
+          flowMeta: {
+            requestId,
+            poolId: resolvedPool.id,
+            poolName: resolvedPool.name,
+            apiKeyLabel: key.apiKeyLabel,
+            providerName: member.providerName,
+          },
         });
 
         return { success: true, streamGenerator: streamGen, errors };
@@ -468,6 +539,18 @@ export async function orchestrate(
 
         // Settle tpm reservation with actual usage
         await settleApiKeyRateLimit(reservation, canonicalResponse.usage?.total_tokens ?? null);
+
+        // Request completed — clear it from the active set in the animation.
+        recordFlowEvent({
+          requestId,
+          poolId: resolvedPool.id,
+          apiKeyId: key.apiKeyId,
+          poolName: resolvedPool.name,
+          apiKeyLabel: key.apiKeyLabel,
+          providerName: member.providerName,
+          stage: "success",
+          latencyMs,
+        });
 
         // Log success
         await createRequestLog({
@@ -539,6 +622,17 @@ export async function orchestrate(
       // reservation so the local RPM/TPM counter isn't inflated.
       await releaseApiKeyRateLimit(reservation);
 
+      recordFlowEvent({
+        requestId,
+        poolId: resolvedPool.id,
+        apiKeyId: key.apiKeyId,
+        poolName: resolvedPool.name,
+        apiKeyLabel: key.apiKeyLabel,
+        providerName: member.providerName,
+        stage: "failed",
+        latencyMs,
+      });
+
       continue;
     }
   }
@@ -575,6 +669,13 @@ async function* streamResponse(
     startTime: number;
     httpStatus: number;
     reservation: ApiKeyRateLimitReservation;
+    flowMeta: {
+      requestId: string;
+      poolId: string;
+      poolName: string;
+      apiKeyLabel: string;
+      providerName: string;
+    };
   }
 ): AsyncGenerator<CanonicalDelta> {
   const reader = response.body?.getReader();
@@ -677,6 +778,21 @@ async function* streamResponse(
         `[stream] EMPTY response — streamed ${deltaCount} deltas but no usable content/reasoning for key=${meta.apiKeyId.slice(0, 8)} model=${meta.virtualModel}`
       );
     }
+
+    // Emit the terminal flow event so the animation clears this request from
+    // the active set once the stream has fully drained.
+    recordFlowEvent({
+      requestId: meta.flowMeta.requestId,
+      poolId: meta.flowMeta.poolId,
+      apiKeyId: meta.apiKeyId,
+      poolName: meta.flowMeta.poolName,
+      apiKeyLabel: meta.flowMeta.apiKeyLabel,
+      providerName: meta.flowMeta.providerName,
+      stage: outcome === "SUCCESS" ? "success" : "failed",
+      latencyMs: Date.now() - meta.startTime,
+      tokens: actualTotal ?? undefined,
+    });
+
     await createRequestLog({
       poolId: meta.poolId,
       apiKeyId: meta.apiKeyId,

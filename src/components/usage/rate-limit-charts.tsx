@@ -36,6 +36,8 @@ interface ChartMode {
   type: "pool" | "key";
   poolId?: string;
   apiKeyId?: string;
+  /** Ordered list of keys the user selected to chart (from ChartKeySelector). */
+  keyIds?: string[];
 }
 
 interface ChartSeries {
@@ -59,8 +61,14 @@ const CHART_COLORS = [
 
 function buildQuery(mode: ChartMode): string {
   const params = new URLSearchParams();
-  if (mode.type === "key" && mode.apiKeyId) params.set("apiKeyId", mode.apiKeyId);
-  if (mode.type === "pool" && mode.poolId) params.set("poolId", mode.poolId);
+  // Manual key selection is the most explicit signal — it wins over pool/key.
+  if (mode.keyIds && mode.keyIds.length > 0) {
+    params.set("keyIds", mode.keyIds.join(","));
+  } else if (mode.type === "key" && mode.apiKeyId) {
+    params.set("apiKeyId", mode.apiKeyId);
+  } else if (mode.type === "pool" && mode.poolId) {
+    params.set("poolId", mode.poolId);
+  }
   return params.toString();
 }
 
@@ -106,6 +114,10 @@ export function RateLimitCharts({ mode }: RateLimitChartsProps) {
   const [entries, setEntries] = useState<RateLimitEntry[]>([]);
   const [timeline, setTimeline] = useState<"min" | "hour">("min");
 
+  // Derive a stable string key so the effect only re-runs when the actual
+  // selection/pool/key changes (mode is a new object each render).
+  const modeKey = mode.keyIds?.length ? `keyIds:${mode.keyIds.join(",")}` : `${mode.type}:${mode.poolId ?? ""}:${mode.apiKeyId ?? ""}`;
+
   // Poll for live data — seeds from server history on the first response so a
   // page refresh preserves the line instead of starting from scratch.
   useEffect(() => {
@@ -129,7 +141,8 @@ export function RateLimitCharts({ mode }: RateLimitChartsProps) {
       active = false;
       clearInterval(interval);
     };
-  }, [mode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeKey]);
 
   // Derive series directly from the current entries + their server history.
   // We keep the FULL history buffer and slice it by the selected timeline so

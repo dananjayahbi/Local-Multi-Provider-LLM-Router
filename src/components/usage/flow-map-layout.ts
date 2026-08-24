@@ -1,0 +1,193 @@
+// ─── Flow-Map Layout (pure geometry) ───────────────────
+// Three-container left→right layout:
+//   [ Client / Copilot ] → [ Gateway (with internal queue) ] → [ Providers ]
+// Kept as a pure module so the SVG renderer stays thin and the geometry is
+// testable and reusable by the fullscreen page.
+
+export interface FlowMapKeyInput {
+  id: string;
+  label: string;
+  providerName: string;
+  rpm: number;
+  rpmLimit: number | null;
+  queued: number;
+  inFlight: number;
+}
+
+export interface FlowMapKeyBox {
+  id: string;
+  label: string;
+  providerName: string;
+  color: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rpm: number;
+  rpmLimit: number | null;
+  saturation: number;
+  inFlight: number;
+  /** Left-edge anchor where request dots enter from the gateway. */
+  inX: number;
+  inY: number;
+}
+
+export interface FlowMapProviderBox {
+  id: string;
+  name: string;
+  color: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  keys: FlowMapKeyBox[];
+}
+
+export interface FlowMapEdge {
+  id: string;
+  keyId: string;
+  providerName: string;
+  color: string;
+  /** Gateway right-edge anchor. */
+  x1: number;
+  y1: number;
+  /** Key-box left-edge anchor. */
+  x2: number;
+  y2: number;
+  /** True when a request is traveling/holding this edge (highlight). */
+  active: boolean;
+}
+
+export interface FlowMapLayout {
+  width: number;
+  height: number;
+  client: { x: number; y: number; w: number; h: number; label: string; outX: number; outY: number };
+  gateway: {
+    x: number; y: number; w: number; h: number;
+    label: string;
+    inX: number; inY: number;   // left edge (from client)
+    outX: number; outY: number; // right edge (to providers)
+  };
+  queue: { x: number; y: number; w: number; h: number; label: string; cx: number; cy: number };
+  providers: FlowMapProviderBox[];
+  edges: FlowMapEdge[];
+}
+
+const PROVIDER_COLORS = [
+  "#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#8b5cf6",
+  "#06b6d4", "#ef4444", "#22c55e", "#3b82f6", "#e11d48",
+];
+
+export function providerColor(providerName: string): string {
+  let hash = 0;
+  for (let i = 0; i < providerName.length; i++) hash = (hash * 31 + providerName.charCodeAt(i)) | 0;
+  return PROVIDER_COLORS[Math.abs(hash) % PROVIDER_COLORS.length];
+}
+
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
+
+const W = 1400;
+const H = 900;
+const CLIENT_W = 190;
+const GATEWAY_W = 280;
+const PROVIDER_X = 1010;
+const PROVIDER_W = 360;
+
+/**
+ * Build the 3-container layout. Providers are stacked on the right column, each
+ * containing its key chips. One edge per key runs from the gateway's right edge
+ * to the key's left edge so a request dot visibly routes to the exact key.
+ */
+export function computeFlowMapLayout(keys: FlowMapKeyInput[]): FlowMapLayout {
+  const cy = H / 2;
+
+  const client = { x: 28, y: cy - 60, w: CLIENT_W, h: 120, label: "Copilot / Client", outX: 28 + CLIENT_W, outY: cy };
+  const gateway = {
+    x: 560, y: cy - 170, w: GATEWAY_W, h: 340,
+    label: "Gateway",
+    inX: 560, inY: cy,
+    outX: 560 + GATEWAY_W, outY: cy,
+  };
+  const queue = {
+    x: gateway.x + 18, y: cy - 70, w: gateway.w - 36, h: 116,
+    label: "Queue", cx: gateway.x + gateway.w / 2, cy,
+  };
+
+  // Group keys by provider.
+  const byProvider = new Map<string, FlowMapKeyInput[]>();
+  for (const k of keys) {
+    const list = byProvider.get(k.providerName) ?? [];
+    list.push(k);
+    byProvider.set(k.providerName, list);
+  }
+  const providerNames = Array.from(byProvider.keys());
+
+  const providers: FlowMapProviderBox[] = [];
+  const edges: FlowMapEdge[] = [];
+
+  // Stack provider boxes vertically in the available height.
+  const topPad = 60;
+  const bottomPad = 60;
+  const available = H - topPad - bottomPad;
+  const providerGap = 24;
+  const totalGap = providerGap * Math.max(0, providerNames.length - 1);
+  const usable = available - totalGap;
+
+  // Give each provider space proportional to its key count (min 150).
+  const minHeight = 150;
+  const totalKeyCount = Math.max(1, keys.length);
+  let cursorY = topPad;
+
+  providerNames.forEach((pname) => {
+    const pKeys = byProvider.get(pname)!;
+    const color = providerColor(pname);
+    // Provider height scales with its key count, minimum 150.
+    const h = Math.max(minHeight, (pKeys.length / totalKeyCount) * usable);
+    const box = { id: `prov-${pname}`, name: pname, color, x: PROVIDER_X, y: cursorY, w: PROVIDER_W, h, keys: [] as FlowMapKeyBox[] };
+
+    const labelH = 40;
+    const keyGap = 10;
+    const keyH = 48;
+    const keysWidth = PROVIDER_W - 20;
+    const startY = cursorY + labelH;
+    pKeys.forEach((k, idx) => {
+      const ky = startY + idx * (keyH + keyGap);
+      const saturation =
+        k.rpmLimit && k.rpmLimit > 0 ? clamp01(k.rpm / k.rpmLimit) : clamp01(k.rpm / 60);
+      box.keys.push({
+        id: k.id,
+        label: k.label,
+        providerName: k.providerName,
+        color,
+        x: PROVIDER_X + 10,
+        y: ky,
+        w: keysWidth,
+        h: keyH,
+        rpm: k.rpm,
+        rpmLimit: k.rpmLimit,
+        saturation,
+        inFlight: k.inFlight,
+        inX: PROVIDER_X + 10,
+        inY: ky + keyH / 2,
+      });
+      edges.push({
+        id: `edge-${k.id}`,
+        keyId: k.id,
+        providerName: k.providerName,
+        color,
+        x1: gateway.outX,
+        y1: gateway.outY,
+        x2: PROVIDER_X + 10,
+        y2: ky + keyH / 2,
+        active: k.inFlight > 0 || k.queued > 0,
+      });
+    });
+
+    providers.push(box);
+    cursorY += h + providerGap;
+  });
+
+  return { width: W, height: H, client, gateway, queue, providers, edges };
+}

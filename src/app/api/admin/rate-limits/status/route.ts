@@ -54,6 +54,49 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const poolId = searchParams.get("poolId") || undefined;
     const apiKeyId = searchParams.get("apiKeyId") || undefined;
+    // Comma-separated list of keys the client wants to chart. Takes priority
+    // over single-key / pool modes so the /usage chart can show the user's
+    // selected set (default: the 2 most-used keys).
+    const keyIdsParam = searchParams.get("keyIds") || undefined;
+    const keyIds = keyIdsParam
+      ? keyIdsParam.split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined;
+
+    if (keyIds && keyIds.length > 0) {
+      // Multi-key mode (from client key selection)
+      const keys = await prisma.apiKey.findMany({
+        where: { id: { in: keyIds } },
+        select: keySelect,
+      });
+      const byId = new Map(keys.map((k) => [k.id, k]));
+      const snapshots = getAllKeyRateSnapshots();
+      const snapMap = new Map(snapshots.map((s) => [s.apiKeyId, s]));
+
+      const entries = keyIds.flatMap((id) => {
+        const k = byId.get(id);
+        if (!k) return [];
+        const s = snapMap.get(id);
+        return [
+          enrich({
+            apiKeyId: id,
+            apiKeyLabel: k.label,
+            providerName: k.provider.name,
+            rpmCurrent: s?.rpmCurrent ?? 0,
+            rpmLimit: k.rpmLimit,
+            tpmCurrent: s?.tpmCurrent ?? 0,
+            tpmLimit: k.tpmLimit,
+            rpdCurrent: s?.rpdCurrent ?? 0,
+            rpdLimit: k.rpdLimit,
+            tpdCurrent: s?.tpdCurrent ?? 0,
+            tpdLimit: k.tpdLimit,
+            isWaiting: s?.isWaiting ?? false,
+            waitingCount: s?.waitingCount ?? 0,
+          }),
+        ];
+      });
+
+      return NextResponse.json(entries);
+    }
 
     if (apiKeyId) {
       // Single key mode
