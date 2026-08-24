@@ -52,6 +52,12 @@ import {
   EXHAUSTED_POOL_MESSAGE,
   NO_HEALTHY_KEY_CLASSIFICATION,
 } from "./routing/exhausted-pool";
+import {
+  getPoolRecoveryInfo,
+  waitForPoolRecovery,
+  readPoolKeyStatuses,
+  recoveryWaitMaxMs,
+} from "./routing/pool-recovery";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -144,11 +150,46 @@ function buildCandidates(pool: ResolvedPool): Candidate[] {
   return allCandidates;
 }
 
+/**
+ * Refresh the `status` of every key in an already-resolved pool after a
+ * `waitForPoolRecovery()` succeeded. The keys in `resolvedPool.members[].keys`
+ * are plain objects copied at resolve time, so a recovered key must have its
+ * in-memory status updated before candidates are re-built or the routing loop
+ * will still skip it as non-routable.
+ */
+async function refreshResolvedPoolStatuses(pool: ResolvedPool): Promise<void> {
+  const statuses = await readPoolKeyStatuses(pool.id);
+  for (const member of pool.members) {
+    for (const key of member.keys) {
+      const fresh = statuses.get(key.apiKeyId);
+      if (fresh) key.status = fresh;
+    }
+  }
+}
+
 // ─── Main Orchestrator ──────────────────────────────────
+
+export interface OrchestrateOptions {
+  /**
+   * Correlates all flow events for ONE inbound gateway request. Passed through
+   * on a recovery-retry so the /usage animation keeps the request (and its
+   * queued→assigned→success chain) under a single id instead of splitting it.
+   */
+  requestId?: string;
+  /** Prior per-attempt errors accumulated before a recovery-retry. */
+  priorErrors?: AttemptError[];
+  /**
+   * Absolute deadline (epoch ms) for the WHOLE recovery-retry budget. Set on
+   * the first attempt; the recursive retry carries it forward so that if a key
+   * keeps getting re-penalized we never wait longer than the route budget.
+   */
+  deadline?: number;
+}
 
 export async function orchestrate(
   canonicalRequest: CanonicalRequest,
-  resolvedPool: ResolvedPool
+  resolvedPool: ResolvedPool,
+  opts: OrchestrateOptions = {}
 ): Promise<OrchestratorResult> {
   // Recover any expired penalties and cooldowns first
   await checkAndRecoverExpiredPenalties();
@@ -159,26 +200,82 @@ export async function orchestrate(
   const logPoolId = resolvedPool.logPoolId !== undefined ? resolvedPool.logPoolId : resolvedPool.id;
 
   const allCandidates = buildCandidates(resolvedPool);
-  const errors: AttemptError[] = [];
+  const errors: AttemptError[] = opts.priorErrors ?? [];
+  const requestId = opts.requestId ?? crypto.randomUUID();
+  const isFirstAttempt = opts.requestId === undefined;
+  // Establish a single recovery budget for the request. If the caller didn't
+  // pass one (first attempt), derive it from the configured max wait now.
+  const recoveryDeadline = opts.deadline ?? Date.now() + recoveryWaitMaxMs();
+
+  // ── Pool recovery introspection ──────────────────────
+  // Look at ALL keys in the pool, not just routable ones, to decide whether
+  // this pool can recover on its own (a PENALIZED/COOLDOWN key with a future
+  // penaltyExpiresAt will be flipped back to ACTIVE by the health engine). If
+  // so, entering an exhausted state below will WAIT for a key to recover and
+  // retry, instead of immediately telling the agent to stop.
+  const recoveryInfo = getPoolRecoveryInfo(
+    resolvedPool.members.flatMap((m) =>
+      m.keys.map((k) => ({ status: k.status, penaltyExpiresAt: k.penaltyExpiresAt }))
+    )
+  );
 
   // Correlate every pipeline transition for this inbound gateway request so
   // the /usage data-flow illustration can render one request as it moves
-  // arrived → queued → assigned → success/failed.
-  const requestId = crypto.randomUUID();
-  recordFlowEvent({
-    requestId,
-    poolId: resolvedPool.id,
-    apiKeyId: null,
-    poolName: resolvedPool.name,
-    apiKeyLabel: null,
-    providerName: null,
-    stage: "arrived",
-  });
+  // arrived → queued → assigned → success/failed. Only emit "arrived" on the
+  // FIRST attempt; a recovery-retry resumes the SAME request chain.
+  if (isFirstAttempt) {
+    recordFlowEvent({
+      requestId,
+      poolId: resolvedPool.id,
+      apiKeyId: null,
+      poolName: resolvedPool.name,
+      apiKeyLabel: null,
+      providerName: null,
+      stage: "arrived",
+    });
+  }
 
   if (allCandidates.length === 0) {
-    // No routable/healthy key remains. This is NOT a hard failure — the caller
-    // must return a pre-defined "pool exhausted" completion so the agent stops
-    // instead of retrying forever. Log it so it's visible on /logs.
+    // No routable/healthy key remains. Normally this is NOT a hard failure and
+    // the caller returns a pre-defined "pool exhausted" completion so the agent
+    // stops instead of retrying forever. HOWEVER — if this pool can recover on
+    // its own (a PENALIZED/COOLDOWN key whose penaltyExpiresAt is in the
+    // future), we instead WAIT for a key to recover and retry the request, so
+    // an autonomous client never sees an error; it just waits and gets the
+    // answer once a key is healthy again.
+    if (recoveryInfo.recoverable && !recoveryInfo.hasActive) {
+      // Announce that we're holding the request for pool recovery.
+      recordFlowEvent({
+        requestId,
+        poolId: resolvedPool.id,
+        apiKeyId: null,
+        poolName: resolvedPool.name,
+        apiKeyLabel: null,
+        providerName: null,
+        stage: "queued",
+      });
+      console.error(
+        `[orchestrator] pool=${resolvedPool.name} has no ACTIVE key — waiting for ` +
+          `recovery (earliest=${recoveryInfo.earliestRecoveryAt ? new Date(recoveryInfo.earliestRecoveryAt).toISOString() : "unknown"})`
+      );
+
+      const recovered = await waitForPoolRecovery(resolvedPool.id, recoveryDeadline);
+      if (recovered) {
+        // A key became ACTIVE again. Refresh the in-memory statuses and retry
+        // the routing loop from the top with the fresh candidate set, keeping
+        // the same requestId, accumulated errors, and shared recovery deadline
+        // so a key that re-penalizes can't extend the wait indefinitely.
+        await refreshResolvedPoolStatuses(resolvedPool);
+        return orchestrate(canonicalRequest, resolvedPool, {
+          requestId,
+          priorErrors: errors,
+          deadline: recoveryDeadline,
+        });
+      }
+      // Timed out — fall through to the exhausted-pool response.
+    }
+
+    // Exhausted (either not recoverable, or the recovery wait timed out).
     await createRequestLog({
       poolId: logPoolId,
       apiKeyId: null,

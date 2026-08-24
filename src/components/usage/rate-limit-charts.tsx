@@ -53,8 +53,8 @@ interface ChartSeries {
 const POLL_MS = 1000;
 const MAX_DATA_POINTS = 240; // ~4 minutes at 1s polling (server caps at 300)
 const CHART_COLORS = [
-  "#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#8b5cf6",
-  "#06b6d4", "#ef4444", "#22c55e", "#e11d48", "#3b82f6",
+  "#65a30d", "#10b981", "#22c55e", "#a3e635", "#059669",
+  "#84cc16", "#16a34a", "#f59e0b", "#bef264", "#4ade80",
 ];
 
 // ─── Helper: build query string ────────────────────────

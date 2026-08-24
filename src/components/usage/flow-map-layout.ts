@@ -74,8 +74,8 @@ export interface FlowMapLayout {
 }
 
 const PROVIDER_COLORS = [
-  "#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#8b5cf6",
-  "#06b6d4", "#ef4444", "#22c55e", "#3b82f6", "#e11d48",
+  "#65a30d", "#10b981", "#22c55e", "#a3e635", "#059669",
+  "#84cc16", "#16a34a", "#f59e0b", "#bef264", "#4ade80",
 ];
 
 export function providerColor(providerName: string): string {

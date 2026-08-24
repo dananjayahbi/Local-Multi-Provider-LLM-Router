@@ -141,7 +141,7 @@ export function PoolKeysEditor({ apiKeys, poolId, onChanged }: PoolKeysEditorPro
                       </Badge>
                     )}
                     {k.autoCalibration && (
-                      <Badge variant="outline" className="text-xs border-blue-500 text-blue-500">
+                      <Badge variant="outline" className="text-xs border-lime-500 text-lime-600">
                         <Gauge className="mr-1 h-3 w-3" /> Auto-cal
                       </Badge>
                     )}

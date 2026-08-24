@@ -21,7 +21,7 @@ interface DiscoveryRequest {
 
 const STATUS_VARIANTS: Record<string, string> = {
   PENDING: "text-amber-600 dark:text-amber-400",
-  RUNNING: "text-blue-600 dark:text-blue-400",
+  RUNNING: "text-lime-600 dark:text-lime-400",
   COMPLETED: "text-green-600 dark:text-green-400",
   FAILED: "text-red-600 dark:text-red-400",
 };

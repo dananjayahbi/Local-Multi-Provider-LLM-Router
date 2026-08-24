@@ -105,7 +105,7 @@ export function FlowMapSvg({ keys, active, className, zoom, panX = 0, panY = 0, 
     >
       <g transform={`translate(${panX} ${panY}) scale(${zoom})`}>
         {/* Client → Gateway edge */}
-        <line x1={mesh.client.outX} y1={mesh.client.outY} x2={mesh.gateway.inX} y2={mesh.gateway.inY} stroke="#6366f1" strokeWidth={2} strokeOpacity={0.8} strokeDasharray="3 4" />
+        <line x1={mesh.client.outX} y1={mesh.client.outY} x2={mesh.gateway.inX} y2={mesh.gateway.inY} stroke="#65a30d" strokeWidth={2} strokeOpacity={0.8} strokeDasharray="3 4" />
 
         {/* Gateway → Key edges */}
         {mesh.edges.map((e) => (
@@ -117,7 +117,7 @@ export function FlowMapSvg({ keys, active, className, zoom, panX = 0, panY = 0, 
 
         {/* ── Gateway block (with queue) ── */}
         <g>
-          <rect x={mesh.gateway.x} y={mesh.gateway.y} width={mesh.gateway.w} height={mesh.gateway.h} rx={14} fill="#0f172a" stroke="#6366f1" strokeWidth={2.5} />
+          <rect x={mesh.gateway.x} y={mesh.gateway.y} width={mesh.gateway.w} height={mesh.gateway.h} rx={14} fill="#0f172a" stroke="#65a30d" strokeWidth={2.5} />
           <text x={mesh.gateway.x + mesh.gateway.w / 2} y={mesh.gateway.y + 30} textAnchor="middle" fontSize={16} fontWeight={700} fill="#fff">GATEWAY</text>
           <text x={mesh.gateway.x + mesh.gateway.w / 2} y={mesh.gateway.y + 50} textAnchor="middle" fontSize={10} fill="#cbd5e1">request routing + rate-limit queue</text>
 
@@ -185,7 +185,7 @@ export function FlowMapSvg({ keys, active, className, zoom, panX = 0, panY = 0, 
           const t = (phase + clock * 0.9) % REQUEST_DURATION / REQUEST_DURATION;
           const x = lerp(mesh.client.outX, mesh.gateway.inX, easeInOutCubic(Math.min(1, t)));
           const y = lerp(mesh.client.outY, mesh.gateway.inY, easeInOutCubic(Math.min(1, t)));
-          return <circle key={`in-${r.requestId}`} cx={x} cy={y} r={4} fill="#6366f1" opacity={0.9} />;
+          return <circle key={`in-${r.requestId}`} cx={x} cy={y} r={4} fill="#65a30d" opacity={0.9} />;
         })}
       </g>
     </svg>
@@ -197,7 +197,7 @@ export function FlowMapSvg({ keys, active, className, zoom, panX = 0, panY = 0, 
 function ClientBlock({ x, y, w, h, label }: { x: number; y: number; w: number; h: number; label: string }) {
   return (
     <g>
-      <rect x={x} y={y} width={w} height={h} rx={14} fill="#0f172a" stroke="#6366f1" strokeWidth={2} />
+      <rect x={x} y={y} width={w} height={h} rx={14} fill="#0f172a" stroke="#65a30d" strokeWidth={2} />
       <text x={x + w / 2} y={y + h / 2 - 6} textAnchor="middle" fontSize={13} fontWeight={700} fill="#fff">{label}</text>
       <text x={x + w / 2} y={y + h / 2 + 14} textAnchor="middle" fontSize={10} fill="#cbd5e1">requests in</text>
     </g>

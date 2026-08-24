@@ -23,8 +23,8 @@ const KIND_META: Record<
   FAILURE: { label: "Error", icon: AlertTriangle, className: "text-red-500 border-red-500/40" },
   SUCCESS: { label: "Success", icon: CheckCircle2, className: "text-green-500 border-green-500/40" },
   SCALE_DOWN: { label: "Scaled down", icon: ArrowDown, className: "text-amber-500 border-amber-500/40" },
-  SCALE_UP: { label: "Scaled up", icon: ArrowUp, className: "text-blue-500 border-blue-500/40" },
-  BASELINE_RESET: { label: "Baseline reset", icon: RefreshCcw, className: "text-purple-500 border-purple-500/40" },
+  SCALE_UP: { label: "Scaled up", icon: ArrowUp, className: "text-lime-500 border-lime-500/40" },
+  BASELINE_RESET: { label: "Baseline reset", icon: RefreshCcw, className: "text-green-500 border-green-500/40" },
 };
 
 function formatTime(iso: string): string {

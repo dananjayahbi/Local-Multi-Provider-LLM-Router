@@ -28,6 +28,9 @@ services:
       - DATABASE_URL=file:/app/prisma/dev.db
       # ENCRYPTION_SECRET is injected from the host .env file
       - ENCRYPTION_SECRET=${ENCRYPTION_SECRET}
+      # How long (seconds) the gateway holds a request when every key in a pool
+      # is penalized, waiting for one to recover before retrying. 0 = disabled.
+      - RECOVERY_WAIT_MAX_SECONDS=${RECOVERY_WAIT_MAX_SECONDS:-240}
     volumes:
       - router-db:/app/prisma
     restart: unless-stopped

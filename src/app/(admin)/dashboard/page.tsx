@@ -1,21 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
-  Server,
-  Key,
-  Layers,
-  Activity,
-  AlertTriangle,
-  Ban,
-  CircleCheck,
-  CircleMinus,
-  TrendingUp,
+  Server, Key, Layers,
+  CircleCheck, AlertTriangle, Ban, CircleMinus,
 } from "lucide-react";
+import { TodayStatsCards } from "@/components/dashboard/today-stats-cards";
+import { PenaltyInspector } from "@/components/dashboard/penalty-inspector";
 
-interface DashboardStats {
+// ─── Types ──────────────────────────────────────────────
+
+interface HealthStats {
   providerCount: number;
   keyCount: number;
   poolCount: number;
@@ -23,53 +19,75 @@ interface DashboardStats {
   penalizedKeys: number;
   suspendedKeys: number;
   disabledKeys: number;
-  requestsToday: number;
-  failuresToday: number;
-  failureRate: string;
-  recentFailures: Array<{
-    id: string;
-    errorClassification: string | null;
-    apiKey?: { label: string; provider: { name: string } } | null;
-    pool?: { name: string } | null;
-    createdAt: string;
-  }>;
+}
+
+interface PenalizedKeyRow {
+  id: string;
+  label: string;
+  status: string;
+  penaltyLevel: number;
+  penaltyType: string | null;
+  penaltyReason: string | null;
+  penaltyExpiresAt: string | null;
+  providerId: string;
+  providerName: string;
+  models: string[];
+  poolNames: string[];
+}
+
+interface DashboardData {
+  today: {
+    tokens: { promptTokens: number; completionTokens: number; totalTokens: number };
+    requests: { total: number; success: number; failed: number };
+  };
+  penalties: PenalizedKeyRow[];
+}
+
+interface ProviderOption {
+  id: string;
+  name: string;
+  models: { id: string; name: string }[];
 }
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
 
-  useEffect(() => {
-    fetch("/api/admin/logs?stats=true")
-      .then((r) => r.json())
-      .then((data) => {
-        setStats(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/dashboard");
+      const json = await res.json();
+      setData(json);
+      setLoading(false);
+    } catch {
+      setLoading(false);
+    }
   }, []);
+
+  // Load dashboard data + provider/model options for the penalty filter.
+  useEffect(() => {
+    load();
+    fetch("/api/admin/models")
+      .then((r) => r.json())
+      .then((models: Array<{ id: string; displayName: string; provider: { id: string; name: string } }>) => {
+        const byProvider = new Map<string, ProviderOption>();
+        for (const m of models) {
+          const existing = byProvider.get(m.provider.id) ?? { id: m.provider.id, name: m.provider.name, models: [] };
+          existing.models.push({ id: m.id, name: m.displayName });
+          byProvider.set(m.provider.id, existing);
+        }
+        setProviders(Array.from(byProvider.values()));
+      })
+      .catch(() => {});
+  }, [load]);
 
   if (loading) {
     return <div className="text-muted-foreground">Loading dashboard...</div>;
   }
-
-  if (!stats) {
+  if (!data) {
     return <div className="text-muted-foreground">Failed to load dashboard.</div>;
   }
-
-  const cards = [
-    { title: "Providers", value: stats.providerCount, icon: Server, color: "text-blue-500" },
-    { title: "API Keys", value: stats.keyCount, icon: Key, color: "text-violet-500" },
-    { title: "Pools", value: stats.poolCount, icon: Layers, color: "text-emerald-500" },
-    { title: "Requests Today", value: stats.requestsToday, icon: Activity, color: "text-amber-500" },
-  ];
-
-  const healthCards = [
-    { label: "Healthy", value: stats.healthyKeys, icon: CircleCheck, color: "text-green-500", bg: "bg-green-50 dark:bg-green-950" },
-    { label: "Penalized", value: stats.penalizedKeys, icon: AlertTriangle, color: "text-yellow-500", bg: "bg-yellow-50 dark:bg-yellow-950" },
-    { label: "Suspended", value: stats.suspendedKeys, icon: Ban, color: "text-red-500", bg: "bg-red-50 dark:bg-red-950" },
-    { label: "Disabled", value: stats.disabledKeys, icon: CircleMinus, color: "text-gray-500", bg: "bg-gray-50 dark:bg-gray-900" },
-  ];
 
   return (
     <div className="space-y-6">
@@ -78,13 +96,61 @@ export default function DashboardPage() {
         <p className="text-muted-foreground">Overview of your LLM router</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {cards.map((c) => (
+      {/* Today: tokens + requests */}
+      <TodayStatsCards data={data.today} />
+
+      {/* Penalty inspector */}
+      <PenaltyInspector penalties={data.penalties} providers={providers} onReset={load} />
+
+      {/* Overview + key health summary */}
+      <OverviewStats />
+    </div>
+  );
+}
+
+// ─── Overview stats (infrastructure + health) ──────────
+
+function OverviewStats() {
+  const [s, setS] = useState<HealthStats | null>(null);
+
+  useEffect(() => {
+    fetch("/api/admin/logs?stats=true")
+      .then((r) => r.json())
+      .then((d) =>
+        setS({
+          providerCount: d.providerCount,
+          keyCount: d.keyCount,
+          poolCount: d.poolCount,
+          healthyKeys: d.healthyKeys,
+          penalizedKeys: d.penalizedKeys,
+          suspendedKeys: d.suspendedKeys,
+          disabledKeys: d.disabledKeys,
+        })
+      )
+      .catch(() => {});
+  }, []);
+
+  if (!s) return null;
+
+  const infra = [
+    { title: "Providers", value: s.providerCount, icon: Server, color: "text-green-600" },
+    { title: "API Keys", value: s.keyCount, icon: Key, color: "text-emerald-600" },
+    { title: "Pools", value: s.poolCount, icon: Layers, color: "text-lime-600" },
+  ];
+  const healthCards = [
+    { label: "Healthy", value: s.healthyKeys, icon: CircleCheck, color: "text-green-600", bg: "bg-green-50 dark:bg-green-950/40" },
+    { label: "Penalized", value: s.penalizedKeys, icon: AlertTriangle, color: "text-yellow-500", bg: "bg-yellow-50 dark:bg-yellow-950/40" },
+    { label: "Suspended", value: s.suspendedKeys, icon: Ban, color: "text-red-500", bg: "bg-red-50 dark:bg-red-950/40" },
+    { label: "Disabled", value: s.disabledKeys, icon: CircleMinus, color: "text-gray-500", bg: "bg-gray-50 dark:bg-gray-900/40" },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-3">
+        {infra.map((c) => (
           <Card key={c.title}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {c.title}
-              </CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">{c.title}</CardTitle>
               <c.icon className={`h-4 w-4 ${c.color}`} />
             </CardHeader>
             <CardContent>
@@ -108,30 +174,6 @@ export default function DashboardPage() {
           </Card>
         ))}
       </div>
-
-      <div className="flex items-center gap-2">
-        <TrendingUp className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm text-muted-foreground">
-          Failure rate today: <span className="font-medium text-red-500">{stats.failureRate}%</span>
-        </span>
-      </div>
-
-      <h2 className="text-lg font-semibold">Recent Failures</h2>
-      {stats.recentFailures.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No recent failures 🎉</p>
-      ) : (
-        <div className="space-y-2">
-          {stats.recentFailures.map((f) => (
-            <div key={f.id} className="flex items-center gap-3 rounded-lg border p-3 text-sm">
-              <Badge variant="destructive">{f.errorClassification || "UNKNOWN"}</Badge>
-              <span>{f.apiKey?.label || "?"} @ {f.apiKey?.provider?.name || "?"}</span>
-              <span className="text-muted-foreground">
-                {new Date(f.createdAt).toLocaleTimeString()}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
