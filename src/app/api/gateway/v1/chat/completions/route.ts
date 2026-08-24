@@ -27,6 +27,10 @@ import {
 import { estimateTokensForRateLimit } from "@/engine/rate-limit/token-estimator";
 import { takePendingInjection } from "@/engine/routing/conversation";
 import { buildInjection, InjectionInput, LimitName } from "@/engine/playground";
+import {
+  buildExhaustedPoolResponse,
+  buildExhaustedPoolStream,
+} from "@/engine/routing/exhausted-pool";
 
 export async function POST(request: NextRequest) {
   // Auth check
@@ -207,6 +211,42 @@ export async function POST(request: NextRequest) {
     };
 
     const result = await orchestrate(canonicalRequest, resolvedPool);
+
+    // ─── Exhausted pool: no healthy key remained ────────
+    // Do NOT return a hard error. Return a valid assistant completion so the
+    // agent sees a final, tool-call-free message and ends its turn (session.idle)
+    // instead of retrying forever. Honors the request's streaming preference.
+    if (result.exhaustedPool) {
+      if (rawBody.stream) {
+        const stream = buildExhaustedPoolStream(requestedModel);
+        const encoder = new TextEncoder();
+        const body = new ReadableStream({
+          async start(controller) {
+            try {
+              for await (const delta of stream) {
+                const chunk = serializeDelta(delta);
+                if (chunk) controller.enqueue(encoder.encode(chunk));
+              }
+              controller.enqueue(encoder.encode(serializeStreamEnd()));
+            } catch (err) {
+              console.error("[gateway:exhausted-stream] stream error:", err);
+              try { controller.enqueue(encoder.encode(serializeStreamEnd())); } catch {}
+            } finally {
+              try { controller.close(); } catch {}
+            }
+          },
+        });
+        return new Response(body, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          },
+        });
+      }
+      return NextResponse.json(serializeResponse(buildExhaustedPoolResponse(requestedModel)));
+    }
 
     if (!result.success) {
       return NextResponse.json(

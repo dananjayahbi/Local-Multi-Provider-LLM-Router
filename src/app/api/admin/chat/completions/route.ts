@@ -14,6 +14,10 @@ import { prisma } from "@/lib/prisma";
 import { CanonicalRequest, CanonicalDelta } from "@/engine/canonical";
 import { orchestrate, ResolvedPool } from "@/engine/orchestrator";
 import { serializeResponse, serializeDelta, serializeStreamEnd } from "@/engine/serializer";
+import {
+  buildExhaustedPoolResponse,
+  buildExhaustedPoolStream,
+} from "@/engine/routing/exhausted-pool";
 
 interface ChatCompletionBody {
   providerModelId: string;
@@ -133,6 +137,41 @@ export async function POST(request: NextRequest) {
   };
 
   const result = await orchestrate(canonicalRequest, resolvedPool);
+
+  // ─── Exhausted pool: no healthy key remained ────────
+  // Return a valid assistant completion so the agent ends its turn instead of
+  // retrying forever. Honors the request's streaming preference.
+  if (result.exhaustedPool) {
+    if (stream) {
+      const gen = buildExhaustedPoolStream(canonicalRequest.model);
+      const encoder = new TextEncoder();
+      const body = new ReadableStream({
+        async start(controller) {
+          try {
+            for await (const delta of gen) {
+              const chunk = serializeDelta(delta);
+              if (chunk) controller.enqueue(encoder.encode(chunk));
+            }
+            controller.enqueue(encoder.encode(serializeStreamEnd()));
+          } catch (err) {
+            console.error("[admin:chat-exhausted-stream] stream error:", err);
+            try { controller.enqueue(encoder.encode(serializeStreamEnd())); } catch {}
+          } finally {
+            try { controller.close(); } catch {}
+          }
+        },
+      });
+      return new Response(body, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+    return NextResponse.json(serializeResponse(buildExhaustedPoolResponse(canonicalRequest.model)));
+  }
 
   if (!result.success) {
     return NextResponse.json(

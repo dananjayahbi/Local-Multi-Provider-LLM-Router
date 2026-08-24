@@ -46,6 +46,10 @@ import {
 import {
   withoutTools,
 } from "./routing/empty-completion";
+import {
+  EXHAUSTED_POOL_MESSAGE,
+  NO_HEALTHY_KEY_CLASSIFICATION,
+} from "./routing/exhausted-pool";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -87,7 +91,8 @@ export interface AttemptError {
   apiKeyLabel: string;
   providerName: string;
   modelName: string;
-  classification: ErrorClassification;
+  /** Error taxonomy, or a synthetic label like NO_HEALTHY_KEY for exhausted pools. */
+  classification: string;
   httpStatus: number;
   message: string;
 }
@@ -97,6 +102,13 @@ export interface OrchestratorResult {
   canonicalResponse?: CanonicalResponse;
   streamGenerator?: AsyncGenerator<CanonicalDelta>;
   errors: AttemptError[];
+  /**
+   * True when the pool could NOT serve the request because no routable/healthy
+   * key remained (all PENALIZED/SUSPENDED/DISABLED, or excluded by routing
+   * limits). Callers MUST NOT surface this as a hard error — they should return
+   * a pre-defined assistant completion so the agent stops instead of retrying.
+   */
+  exhaustedPool?: boolean;
 }
 
 // ─── Candidate List Builder ────────────────────────────
@@ -148,17 +160,36 @@ export async function orchestrate(
   const errors: AttemptError[] = [];
 
   if (allCandidates.length === 0) {
+    // No routable/healthy key remains. This is NOT a hard failure — the caller
+    // must return a pre-defined "pool exhausted" completion so the agent stops
+    // instead of retrying forever. Log it so it's visible on /logs.
+    await createRequestLog({
+      poolId: logPoolId,
+      apiKeyId: null,
+      providerModelId: null,
+      tier: null,
+      outcome: "FAILURE",
+      errorClassification: NO_HEALTHY_KEY_CLASSIFICATION,
+      httpStatus: 0,
+      latencyMs: 0,
+      requestedVirtualModel: canonicalRequest.model,
+      providerErrorMessage: null,
+      providerErrorCode: null,
+      gatewayErrorMessage: EXHAUSTED_POOL_MESSAGE,
+    });
+
     return {
       success: false,
+      exhaustedPool: true,
       errors: [
         {
           apiKeyId: "",
           apiKeyLabel: "",
           providerName: "",
           modelName: "",
-          classification: "UNKNOWN",
+          classification: NO_HEALTHY_KEY_CLASSIFICATION,
           httpStatus: 0,
-          message: "No eligible keys found in pool. All keys may be disabled or suspended.",
+          message: EXHAUSTED_POOL_MESSAGE,
         },
       ],
     };
@@ -209,17 +240,36 @@ export async function orchestrate(
   }
 
   if (orderedCandidates.length === 0) {
+    // Every otherwise-healthy key was excluded by the routing selector
+    // (limits/context fit). Treat as exhausted so the caller returns a
+    // pre-defined completion instead of a hard error.
+    await createRequestLog({
+      poolId: logPoolId,
+      apiKeyId: null,
+      providerModelId: null,
+      tier: null,
+      outcome: "FAILURE",
+      errorClassification: NO_HEALTHY_KEY_CLASSIFICATION,
+      httpStatus: 0,
+      latencyMs: 0,
+      requestedVirtualModel: canonicalRequest.model,
+      providerErrorMessage: null,
+      providerErrorCode: null,
+      gatewayErrorMessage: EXHAUSTED_POOL_MESSAGE,
+    });
+
     return {
       success: false,
+      exhaustedPool: true,
       errors: [
         {
           apiKeyId: "",
           apiKeyLabel: "",
           providerName: "",
           modelName: "",
-          classification: "UNKNOWN",
+          classification: NO_HEALTHY_KEY_CLASSIFICATION,
           httpStatus: 0,
-          message: "No candidate key can serve this request (limits/context).",
+          message: EXHAUSTED_POOL_MESSAGE,
         },
       ],
     };
@@ -472,8 +522,11 @@ export async function orchestrate(
     }
   }
 
-  // All candidates exhausted
-  return { success: false, errors };
+  // All candidates exhausted: every routable key was attempted and failed in
+  // this call. Each per-attempt failure was already logged. Mark the pool as
+  // exhausted so the caller returns a pre-defined completion instead of a hard
+  // error (autonomous agents must stop, not retry forever).
+  return { success: false, exhaustedPool: true, errors };
 }
 
 // ─── Streaming Helper ───────────────────────────────────
