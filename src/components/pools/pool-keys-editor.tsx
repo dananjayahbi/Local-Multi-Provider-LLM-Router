@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { CopyButton } from "@/components/pools/copy-button";
 import { KeyStatusBadge } from "@/components/pools/key-status-badge";
+import { ManualPenaltyDialog } from "@/components/keys/manual-penalty-dialog";
 import { KeyLimitsFields, emptyKeyLimitsForm, keyLimitsFromApiKey, keyLimitsToPayload, type KeyLimitsForm } from "@/components/pools/key-limits-fields";
 import {
   Key,
@@ -164,6 +165,7 @@ export function PoolKeysEditor({ apiKeys, poolId, onChanged }: PoolKeysEditorPro
                         <RotateCcw className="mr-1 h-3 w-3" /> Reset
                       </Button>
                     )}
+                    <ManualPenaltyDialog apiKey={k} onChanged={onChanged} />
                     {k.status !== "DISABLED" ? (
                       <Button size="sm" variant="outline" onClick={() => runAction(k.id, "disable")}>
                         <CircleMinus className="mr-1 h-3 w-3" /> Disable

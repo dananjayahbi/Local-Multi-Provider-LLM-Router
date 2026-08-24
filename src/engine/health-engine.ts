@@ -5,6 +5,7 @@
 import { prisma } from "@/lib/prisma";
 import { ErrorClassification } from "./error-classifier";
 import { detectLimitFromError, resolvePenaltyDecision } from "./penalty-application";
+import { resolveManualPenalty } from "./manual-penalty";
 
 export interface HealthUpdateInput {
   apiKeyId: string;
@@ -216,6 +217,47 @@ export async function resetPenalty(apiKeyId: string): Promise<void> {
       penaltyReason: null,
     },
   });
+}
+
+/**
+ * Manually apply a penalty to a key — either by escalation level (cooldown
+ * derived from the variable-penalty backoff) or a custom cooldown (seconds).
+ * Used by the admin UI "Penalty" button. Always sets status PENALIZED.
+ */
+export async function applyManualPenalty(
+  apiKeyId: string,
+  opts: { level?: number; cooldownSeconds?: number }
+): Promise<HealthActionResult> {
+  const decision = resolveManualPenalty(opts, await getSettings());
+  const now = new Date();
+  const penaltyExpiresAt = new Date(now.getTime() + decision.cooldownSeconds * 1000);
+
+  const key = await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: {
+      status: "PENALIZED",
+      penaltyLevel: decision.penaltyLevel,
+      penaltyExpiresAt,
+      penaltyType: "VARIABLE",
+      penaltyReason: "manual",
+      suspendedReason: null,
+      lastUsedAt: now,
+    },
+  });
+
+  console.error(
+    `[health] key=${apiKeyId.slice(0, 8)} manually penalized level=${decision.penaltyLevel} cooldown=${decision.cooldownSeconds}s`
+  );
+
+  return {
+    keyId: apiKeyId,
+    newStatus: "PENALIZED",
+    penaltyLevel: decision.penaltyLevel,
+    penaltyExpiresAt,
+    suspendedReason: null,
+    penaltyType: "VARIABLE",
+    penaltyReason: "manual",
+  };
 }
 
 export async function resetKeyHealth(apiKeyId: string): Promise<void> {

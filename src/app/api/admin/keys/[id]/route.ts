@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateApiKey, deleteApiKey } from "@/engine/data-access/api-keys";
-import { disableKey, enableKey, reactivateKey, resetPenalty } from "@/engine/health-engine";
+import { disableKey, enableKey, reactivateKey, resetPenalty, applyManualPenalty } from "@/engine/health-engine";
 import { parseRateLimitInput } from "@/lib/api-key-rate-limits";
 import {
   enableAutoCalibration,
@@ -120,6 +120,12 @@ export async function PATCH(
         break;
       case "reset-penalty":
         await resetPenalty(id);
+        break;
+      case "apply-penalty":
+        await applyManualPenalty(id, {
+          level: typeof body.level === "number" ? body.level : undefined,
+          cooldownSeconds: typeof body.cooldownSeconds === "number" ? body.cooldownSeconds : undefined,
+        });
         break;
       default:
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });

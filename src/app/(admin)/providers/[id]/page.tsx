@@ -31,6 +31,7 @@ import {
   Gauge,
   RotateCcw,
 } from "lucide-react";
+import { ManualPenaltyDialog } from "@/components/keys/manual-penalty-dialog";
 
 interface ApiKeyItem {
   id: string;
@@ -354,6 +355,7 @@ export default function ProviderDetailPage() {
                         <RotateCcw className="mr-1 h-3 w-3" /> Reset
                       </Button>
                     )}
+                    <ManualPenaltyDialog apiKey={k} onChanged={loadData} />
                     {k.status !== "DISABLED" ? (
                       <Button size="sm" variant="outline" onClick={() => handleKeyAction(k.id, "disable")}>
                         <CircleMinus className="mr-1 h-3 w-3" /> Disable
