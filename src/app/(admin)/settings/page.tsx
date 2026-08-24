@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Save, Server, Clock, Info } from "lucide-react";
 import { CopyButton } from "@/components/pools/copy-button";
 import { gatewayBaseUrl } from "@/lib/gateway-url";
+import { BackupSettingsPanel } from "@/components/settings/backup-settings-panel";
 
 interface SettingsData {
   gatewayKeyPrefix: string;
@@ -142,6 +143,9 @@ export default function SettingsPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Backup & Restore */}
+      <BackupSettingsPanel />
 
       {/* Info */}
       <Card>
