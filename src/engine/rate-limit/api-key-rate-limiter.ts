@@ -250,10 +250,36 @@ export function getKeyUsageSnapshot(apiKeyId: string): KeyUsage | null {
 
 export interface KeyRateSnapshot {
   apiKeyId: string;
+  /** Request count in the current 60s window. */
   rpmCurrent: number;
+  /** Estimated token count in the current 60s window. */
   tpmCurrent: number;
+  /** Daily request count (24h rolling). */
+  rpdCurrent: number;
+  /** Daily token count (24h rolling). */
+  tpdCurrent: number;
   isWaiting: boolean;        // any request currently queued for this key
   waitingCount: number;      // approximate # of queued reservations
+}
+
+/** Read the live counters for a key WITHOUT mutating its window arrays. */
+function collectCounters(
+  state: KeyWindowState,
+  now: number
+): Omit<KeyRateSnapshot, "apiKeyId"> {
+  const validRequestTs = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
+  const validTokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
+  const dailyRequestTs = state.dailyRequestTs.filter((ts) => now - ts < DAY_WINDOW_MS);
+  const dailyTokenRecords = state.dailyTokenRecords.filter((r) => now - r.timestamp < DAY_WINDOW_MS);
+
+  return {
+    rpmCurrent: validRequestTs.length,
+    tpmCurrent: validTokenRecords.reduce((s, r) => s + r.tokens, 0),
+    rpdCurrent: dailyRequestTs.length,
+    tpdCurrent: dailyTokenRecords.reduce((s, r) => s + r.tokens, 0),
+    isWaiting: validRequestTs.length > 0 || validTokenRecords.length > 0,
+    waitingCount: validRequestTs.length,
+  };
 }
 
 export function getAllKeyRateSnapshots(): KeyRateSnapshot[] {
@@ -261,18 +287,7 @@ export function getAllKeyRateSnapshots(): KeyRateSnapshot[] {
   const snapshots: KeyRateSnapshot[] = [];
 
   for (const [apiKeyId, state] of windowStateByKey.entries()) {
-    // Count expired without mutating the real arrays (shift is done by prune, so we do a filtered read)
-    const validRequestTs = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
-    const validTokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
-    const tokenSum = validTokenRecords.reduce((s, r) => s + r.tokens, 0);
-
-    snapshots.push({
-      apiKeyId,
-      rpmCurrent: validRequestTs.length,
-      tpmCurrent: tokenSum,
-      isWaiting: validRequestTs.length > 0 || validTokenRecords.length > 0,
-      waitingCount: validRequestTs.length,
-    });
+    snapshots.push({ apiKeyId, ...collectCounters(state, now) });
   }
 
   return snapshots;
@@ -282,16 +297,48 @@ export function getKeyRateSnapshot(apiKeyId: string): KeyRateSnapshot | null {
   const state = windowStateByKey.get(apiKeyId);
   if (!state) return null;
 
-  const now = Date.now();
-  const validRequestTs = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
-  const validTokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
-  const tokenSum = validTokenRecords.reduce((s, r) => s + r.tokens, 0);
+  return { apiKeyId, ...collectCounters(state, Date.now()) };
+}
 
-  return {
-    apiKeyId,
-    rpmCurrent: validRequestTs.length,
-    tpmCurrent: tokenSum,
-    isWaiting: validRequestTs.length > 0 || validTokenRecords.length > 0,
-    waitingCount: validRequestTs.length,
+// ─── Server-side snapshot history (for refresh-preserving charts) ──
+// The /usage charts poll live status every second. On every poll we append a
+// point to an in-memory ring buffer per key so a browser refresh can SEED the
+// chart from server history instead of starting from an empty line.
+
+export interface RateHistoryPoint {
+  ts: number;
+  rpm: number;
+  tpm: number;
+  rpd: number;
+  tpd: number;
+}
+
+const HISTORY_MAX_POINTS = 300; // ~5 minutes at a 1s poll
+const historyByKey = new Map<string, RateHistoryPoint[]>();
+
+/** Append a freshly-sampled point for a key (called by the status route on poll). */
+export function appendRateHistorySnapshot(apiKeyId: string): RateHistoryPoint {
+  const state = windowStateByKey.get(apiKeyId);
+  const now = Date.now();
+  const counters = state ? collectCounters(state, now) : null;
+
+  const point: RateHistoryPoint = {
+    ts: now,
+    rpm: counters?.rpmCurrent ?? 0,
+    tpm: counters?.tpmCurrent ?? 0,
+    rpd: counters?.rpdCurrent ?? 0,
+    tpd: counters?.tpdCurrent ?? 0,
   };
+
+  const buffer = historyByKey.get(apiKeyId) ?? [];
+  buffer.push(point);
+  if (buffer.length > HISTORY_MAX_POINTS) buffer.splice(0, buffer.length - HISTORY_MAX_POINTS);
+  historyByKey.set(apiKeyId, buffer);
+
+  return point;
+}
+
+/** Return the buffered history for a key (empty if none). */
+export function getRateHistory(apiKeyId: string): RateHistoryPoint[] {
+  return historyByKey.get(apiKeyId) ?? [];
 }

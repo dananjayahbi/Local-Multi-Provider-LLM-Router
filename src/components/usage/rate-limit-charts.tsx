@@ -1,10 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Gauge, AlertCircle } from "lucide-react";
+import { Gauge, AlertCircle, Clock } from "lucide-react";
+import { SmoothRateChart, ChartPoint } from "./smooth-rate-chart";
 
 // ─── Types ──────────────────────────────────────────────
+
+interface RateHistoryPoint {
+  ts: number;
+  rpm: number;
+  tpm: number;
+  rpd: number;
+  tpd: number;
+}
 
 interface RateLimitEntry {
   apiKeyId: string;
@@ -14,8 +23,13 @@ interface RateLimitEntry {
   rpmLimit: number | null;
   tpmCurrent: number;
   tpmLimit: number | null;
+  rpdCurrent: number;
+  rpdLimit: number | null;
+  tpdCurrent: number;
+  tpdLimit: number | null;
   isWaiting: boolean;
   waitingCount: number;
+  history: RateHistoryPoint[];
 }
 
 interface ChartMode {
@@ -24,23 +38,18 @@ interface ChartMode {
   apiKeyId?: string;
 }
 
-interface DataPoint {
-  time: number;
-  value: number;
-}
-
-interface LineSeries {
+interface ChartSeries {
   key: string;
   label: string;
   color: string;
-  data: DataPoint[];
+  data: ChartPoint[];
   threshold: number | null; // null = no limit
 }
 
 // ─── Constants ──────────────────────────────────────────
 
 const POLL_MS = 1000;
-const MAX_DATA_POINTS = 60; // 1 minute of data at 1s polling
+const MAX_DATA_POINTS = 240; // ~4 minutes at 1s polling (server caps at 300)
 const CHART_COLORS = [
   "#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#8b5cf6",
   "#06b6d4", "#ef4444", "#22c55e", "#e11d48", "#3b82f6",
@@ -55,157 +64,16 @@ function buildQuery(mode: ChartMode): string {
   return params.toString();
 }
 
-// ─── SVG Line Chart Sub-component ───────────────────────
-
-interface LiveLineChartProps {
-  title: string;
-  seriesList: LineSeries[];
-  unit: string;
-}
-
-function LiveLineChart({ title, seriesList, unit }: LiveLineChartProps) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const PADDING = { top: 16, right: 16, bottom: 28, left: 48 };
-
-  const allValues = seriesList.flatMap((s) => s.data.map((d) => d.value));
-  const allThresholds = seriesList
-    .map((s) => s.threshold)
-    .filter((t): t is number => t != null && t > 0);
-
-  const minVal = 0;
-  const maxVal = Math.max(
-    ...allValues,
-    ...allThresholds,
-    10 // minimum visible range
-  );
-  const range = maxVal - minVal || 1;
-
-  const W = 600;
-  const H = 200;
-  const innerW = W - PADDING.left - PADDING.right;
-  const innerH = H - PADDING.top - PADDING.bottom;
-
-  const scaleX = (i: number) => PADDING.left + (i / Math.max(MAX_DATA_POINTS - 1, 1)) * innerW;
-  const scaleY = (v: number) => PADDING.top + innerH - ((v - minVal) / range) * innerH;
-
-  // Build Y-axis ticks
-  const yTicks: number[] = [];
-  const tickCount = 4;
-  for (let i = 0; i <= tickCount; i++) {
-    yTicks.push(Math.round(minVal + (range / tickCount) * i));
-  }
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
-          {/* Grid lines */}
-          {yTicks.map((tick) => (
-            <g key={tick}>
-              <line
-                x1={PADDING.left}
-                y1={scaleY(tick)}
-                x2={W - PADDING.right}
-                y2={scaleY(tick)}
-                stroke="#e5e7eb"
-                strokeDasharray="4 2"
-              />
-              <text
-                x={PADDING.left - 6}
-                y={scaleY(tick) + 4}
-                textAnchor="end"
-                className="text-[10px] fill-gray-400"
-              >
-                {tick}
-              </text>
-            </g>
-          ))}
-
-          {/* Threshold lines */}
-          {seriesList.map((series) => {
-            if (series.threshold == null || series.threshold <= 0) return null;
-            const y = scaleY(series.threshold);
-            return (
-              <g key={`thresh-${series.key}`}>
-                <line
-                  x1={PADDING.left}
-                  y1={y}
-                  x2={W - PADDING.right}
-                  y2={y}
-                  stroke={series.color}
-                  strokeWidth="1.5"
-                  strokeDasharray="6 3"
-                  opacity={0.6}
-                />
-                <text
-                  x={W - PADDING.right - 4}
-                  y={y - 5}
-                  textAnchor="end"
-                  className="text-[9px]"
-                  fill={series.color}
-                >
-                  {series.threshold} {unit}
-                </text>
-              </g>
-            );
-          })}
-
-          {/* Data lines */}
-          {seriesList.map((series) => {
-            if (series.data.length < 2) return null;
-            const points = series.data
-              .map((d, i) => `${scaleX(i)},${scaleY(d.value)}`)
-              .join(" ");
-
-            return (
-              <g key={series.key}>
-                <polyline
-                  points={points}
-                  fill="none"
-                  stroke={series.color}
-                  strokeWidth="2"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                />
-                {/* Label */}
-                {series.data.length > 0 && (
-                  <text
-                    x={scaleX(series.data.length - 1) + 4}
-                    y={scaleY(series.data[series.data.length - 1].value) + 4}
-                    className="text-[10px] font-medium"
-                    fill={series.color}
-                  >
-                    {series.label}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-
-          {/* No data */}
-          {seriesList.every((s) => s.data.length === 0) && (
-            <text
-              x={W / 2}
-              y={H / 2}
-              textAnchor="middle"
-              className="text-xs fill-gray-400"
-            >
-              Waiting for data...
-            </text>
-          )}
-        </svg>
-      </CardContent>
-    </Card>
-  );
-}
-
 // ─── Queue Indicator ────────────────────────────────────
 
 function QueueIndicator({ entries }: { entries: RateLimitEntry[] }) {
-  const waitingEntries = entries.filter((e) => e.isWaiting);
+  // Only flag keys that are genuinely saturated: they have a limit AND their
+  // live counter is at/above the ceiling (i.e. the gateway is throttling).
+  const waitingEntries = entries.filter(
+    (e) =>
+      (e.rpmLimit && e.rpmCurrent >= e.rpmLimit) ||
+      (e.tpmLimit && e.tpmCurrent >= e.tpmLimit)
+  );
 
   if (waitingEntries.length === 0) return null;
 
@@ -219,7 +87,7 @@ function QueueIndicator({ entries }: { entries: RateLimitEntry[] }) {
           </p>
           <p className="text-xs text-amber-600 dark:text-amber-400">
             {waitingEntries
-              .map((e) => `${e.apiKeyLabel} (${e.waitingCount} queued)`)
+              .map((e) => `${e.apiKeyLabel} (rpm ${e.rpmCurrent}/${e.rpmLimit ?? "∞"} · tpm ${e.tpmCurrent}/${e.tpmLimit ?? "∞"})`)
               .join(", ")}
           </p>
         </div>
@@ -236,10 +104,10 @@ interface RateLimitChartsProps {
 
 export function RateLimitCharts({ mode }: RateLimitChartsProps) {
   const [entries, setEntries] = useState<RateLimitEntry[]>([]);
-  const [rpmSeries, setRpmSeries] = useState<LineSeries[]>([]);
-  const [tpmSeries, setTpmSeries] = useState<LineSeries[]>([]);
+  const [timeline, setTimeline] = useState<"min" | "hour">("min");
 
-  // Poll for live data
+  // Poll for live data — seeds from server history on the first response so a
+  // page refresh preserves the line instead of starting from scratch.
   useEffect(() => {
     let active = true;
 
@@ -250,46 +118,6 @@ export function RateLimitCharts({ mode }: RateLimitChartsProps) {
         if (!active) return;
         const data: RateLimitEntry[] = await res.json();
         setEntries(data);
-
-        const now = Date.now();
-
-        setRpmSeries((prev) =>
-          data.map((entry, i) => {
-            const key = entry.apiKeyId;
-            const existing = prev.find((s) => s.key === key);
-            const point: DataPoint = { time: now, value: entry.rpmCurrent };
-            const dataPoints = existing
-              ? [...existing.data.slice(-MAX_DATA_POINTS + 1), point]
-              : [point];
-
-            return {
-              key,
-              label: entry.apiKeyLabel,
-              color: CHART_COLORS[i % CHART_COLORS.length],
-              data: dataPoints,
-              threshold: entry.rpmLimit,
-            };
-          })
-        );
-
-        setTpmSeries((prev) =>
-          data.map((entry, i) => {
-            const key = entry.apiKeyId;
-            const existing = prev.find((s) => s.key === key);
-            const point: DataPoint = { time: now, value: entry.tpmCurrent };
-            const dataPoints = existing
-              ? [...existing.data.slice(-MAX_DATA_POINTS + 1), point]
-              : [point];
-
-            return {
-              key,
-              label: entry.apiKeyLabel,
-              color: CHART_COLORS[i % CHART_COLORS.length],
-              data: dataPoints,
-              threshold: entry.tpmLimit,
-            };
-          })
-        );
       } catch {
         // silently ignore poll errors
       }
@@ -303,8 +131,46 @@ export function RateLimitCharts({ mode }: RateLimitChartsProps) {
     };
   }, [mode]);
 
+  // Derive series directly from the current entries + their server history.
+  // We keep the FULL history buffer and slice it by the selected timeline so
+  // the chart never resets and the lines stay smooth.
+  const rpmSeries: ChartSeries[] = entries.map((e, i) => {
+    const color = CHART_COLORS[i % CHART_COLORS.length];
+    const history = (e.history ?? []).filter((p) =>
+      timeline === "hour" ? true : p.ts >= Date.now() - MAX_DATA_POINTS * POLL_MS
+    );
+    return {
+      key: e.apiKeyId,
+      label: e.apiKeyLabel,
+      color,
+      data: history.map((p) => ({ time: p.ts, value: p.rpm })),
+      threshold: e.rpmLimit,
+    };
+  });
+
+  const tpmSeries: ChartSeries[] = entries.map((e, i) => {
+    const color = CHART_COLORS[i % CHART_COLORS.length];
+    const history = (e.history ?? []).filter((p) =>
+      timeline === "hour" ? true : p.ts >= Date.now() - MAX_DATA_POINTS * POLL_MS
+    );
+    return {
+      key: e.apiKeyId,
+      label: e.apiKeyLabel,
+      color,
+      data: history.map((p) => ({ time: p.ts, value: p.tpm })),
+      threshold: e.tpmLimit,
+    };
+  });
+
+  // Seed a deterministic color map across entries (stable per apiKeyId).
+  const colorMap = new Map(entries.map((e, i) => [e.apiKeyId, CHART_COLORS[i % CHART_COLORS.length]]));
+
   const hasLimits = entries.some(
-    (e) => (e.rpmLimit && e.rpmLimit > 0) || (e.tpmLimit && e.tpmLimit > 0)
+    (e) =>
+      (e.rpmLimit && e.rpmLimit > 0) ||
+      (e.tpmLimit && e.tpmLimit > 0) ||
+      (e.rpdLimit && e.rpdLimit > 0) ||
+      (e.tpdLimit && e.tpdLimit > 0)
   );
 
   if (!hasLimits) {
@@ -316,7 +182,7 @@ export function RateLimitCharts({ mode }: RateLimitChartsProps) {
             No rate-limited keys active in the selected scope.
           </p>
           <p className="text-xs text-muted-foreground mt-1">
-            Set RPM/TPM limits on API keys to see live charts here.
+            Set RPM / TPM / RPD / TPD limits on API keys to see live charts here.
           </p>
         </CardContent>
       </Card>
@@ -325,10 +191,39 @@ export function RateLimitCharts({ mode }: RateLimitChartsProps) {
 
   return (
     <div className="space-y-4">
-      <QueueIndicator entries={entries} />
+      <div className="flex items-center justify-between">
+        <QueueIndicator entries={entries} />
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Clock className="h-3.5 w-3.5" />
+          <div className="inline-flex rounded-md border p-0.5">
+            <button
+              onClick={() => setTimeline("min")}
+              className={`rounded px-2 py-0.5 transition-colors ${timeline === "min" ? "bg-muted font-medium" : "hover:bg-muted/60"}`}
+            >
+              ~4 min
+            </button>
+            <button
+              onClick={() => setTimeline("hour")}
+              className={`rounded px-2 py-0.5 transition-colors ${timeline === "hour" ? "bg-muted font-medium" : "hover:bg-muted/60"}`}
+            >
+              full history
+            </button>
+          </div>
+        </div>
+      </div>
 
-      <LiveLineChart title="Requests Per Minute (RPM)" seriesList={rpmSeries} unit="req" />
-      <LiveLineChart title="Tokens Per Minute (TPM)" seriesList={tpmSeries} unit="tok" />
+      <SmoothRateChart
+        title="Requests Per Minute (RPM)"
+        subtitle={`${entries.length} key(s)`}
+        seriesList={rpmSeries.map((s) => ({ ...s, color: colorMap.get(s.key) ?? s.color }))}
+        unit="req"
+      />
+      <SmoothRateChart
+        title="Tokens Per Minute (TPM)"
+        subtitle={`${entries.length} key(s)`}
+        seriesList={tpmSeries.map((s) => ({ ...s, color: colorMap.get(s.key) ?? s.color }))}
+        unit="tok"
+      />
     </div>
   );
 }
