@@ -471,6 +471,17 @@ export async function orchestrate(
 
 // ─── Streaming Helper ───────────────────────────────────
 
+/** Whether a single delta choice carries usable content, reasoning, or tools. */
+function hasUsableDelta(choice: CanonicalDelta["choices"][0]): boolean {
+  const d = choice.delta ?? {};
+  const raw = d as Record<string, unknown>;
+  if (typeof d.content === "string" && d.content.length > 0) return true;
+  if (Array.isArray(d.tool_calls) && d.tool_calls.length > 0) return true;
+  if (typeof raw.reasoning === "string" && raw.reasoning.length > 0) return true;
+  if (typeof raw.reasoning_content === "string" && raw.reasoning_content.length > 0) return true;
+  return false;
+}
+
 async function* streamResponse(
   response: Response,
   adapter: ReturnType<typeof getAdapter>,
@@ -493,6 +504,7 @@ async function* streamResponse(
   let deltaCount = 0;
   let skippedEmptyChoices = 0;
   let sawTerminal = false;
+  let producedContent = false; // any delta with usable content / reasoning / tool_calls
   const streamUsage: { promptTokens?: number; completionTokens?: number } = {};
 
   console.error(`[stream] starting stream for key=${meta.apiKeyId.slice(0, 8)} model=${meta.virtualModel}`);
@@ -518,6 +530,9 @@ async function* streamResponse(
           if (delta.choices.some((c) => c.finish_reason != null)) {
             sawTerminal = true;
           }
+          if (delta.choices.some((c) => hasUsableDelta(c))) {
+            producedContent = true;
+          }
           deltaCount++;
           // Capture usage from stream chunks (last chunk often has usage)
           if (delta.usage) {
@@ -538,6 +553,9 @@ async function* streamResponse(
         } else {
           if (delta.choices.some((c) => c.finish_reason != null)) {
             sawTerminal = true;
+          }
+          if (delta.choices.some((c) => hasUsableDelta(c))) {
+            producedContent = true;
           }
           deltaCount++;
           if (delta.usage) {
@@ -569,13 +587,21 @@ async function* streamResponse(
         : null;
     await settleApiKeyRateLimit(meta.reservation, actualTotal);
 
-    // Log success after stream completes
+    // Log outcome after stream completes. If the stream produced NO usable
+    // content/reasoning/tool-calls, the client (Copilot) will report "no
+    // response returned" — log it as a failure so it's visible, not a false SUCCESS.
+    const outcome = producedContent ? "SUCCESS" : "EMPTY_RESPONSE";
+    if (!producedContent) {
+      console.error(
+        `[stream] EMPTY response — streamed ${deltaCount} deltas but no usable content/reasoning for key=${meta.apiKeyId.slice(0, 8)} model=${meta.virtualModel}`
+      );
+    }
     await createRequestLog({
       poolId: meta.poolId,
       apiKeyId: meta.apiKeyId,
       providerModelId: meta.providerModelId,
       tier: meta.tier,
-      outcome: "SUCCESS",
+      outcome,
       httpStatus: meta.httpStatus,
       latencyMs: Date.now() - meta.startTime,
       promptTokens: streamUsage.promptTokens ?? null,

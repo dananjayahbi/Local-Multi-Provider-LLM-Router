@@ -16,6 +16,12 @@ export interface CanonicalMessage {
   content: string | ContentPart[];
   name?: string;
   tool_call_id?: string;
+  // Assistant messages may carry the tool calls the model requested. Clients
+  // like GitHub Copilot send these back so the next turn stays anchored to the
+  // preceding `tool` results. Dropping them (as a proxy) detaches the tool
+  // result from its call, confusing the model into re-issuing tools forever
+  // (the "todo tool loops" symptom).
+  tool_calls?: CanonicalToolCall[];
 }
 
 export interface CanonicalToolFunction {
@@ -54,13 +60,18 @@ export interface CanonicalToolCall {
   };
 }
 
+export interface CanonicalMessageData {
+  role: "assistant";
+  content: string | null;
+  tool_calls?: CanonicalToolCall[];
+  // Reasoning read natively by GitHub Copilot (collapsible Thinking UI).
+  reasoning?: string;
+  reasoning_content?: string;
+}
+
 export interface CanonicalChoice {
   index: number;
-  message: {
-    role: "assistant";
-    content: string | null;
-    tool_calls?: CanonicalToolCall[];
-  };
+  message: CanonicalMessageData;
   finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null;
 }
 
@@ -92,6 +103,10 @@ export interface CanonicalDeltaChoice {
         arguments?: string;
       };
     }>;
+    // Reasoning fields read natively by GitHub Copilot (collapsible Thinking UI).
+    reasoning?: string;
+    reasoning_content?: string;
+    reasoning_details?: Array<{ type?: string; text?: string; index?: number }>;
   };
   finish_reason?: "stop" | "length" | "tool_calls" | "content_filter" | null;
 }

@@ -20,6 +20,9 @@ export function serializeResponse(canonical: CanonicalResponse): object {
         ...(choice.message.tool_calls && choice.message.tool_calls.length > 0
           ? { tool_calls: choice.message.tool_calls }
           : {}),
+        // Pass reasoning through so Copilot renders the collapsible Thinking UI.
+        ...(choice.message.reasoning ? { reasoning: choice.message.reasoning } : {}),
+        ...(choice.message.reasoning_content ? { reasoning_content: choice.message.reasoning_content } : {}),
       },
       finish_reason: choice.finish_reason,
     })),

@@ -7,6 +7,8 @@
 //
 // Run: npx tsx scripts/test-copilot-stream.ts
 
+export {}; // module-scope: prevents top-level const collision with other scripts
+
 const GATEWAY_URL = "http://localhost:4006/api/gateway/v1/chat/completions";
 const POOL_KEY = "sk-NseiAVeURYm9B6o42iqGnnbtaaz_Cjjak4ulTPWu9za00pwa";
 const POOL_MODEL = "OpenRouter-Free-Endpoint";
