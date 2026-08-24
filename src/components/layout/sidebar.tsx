@@ -16,6 +16,7 @@ import {
   Boxes,
   MessageSquare,
   Activity,
+  BookOpen,
 } from "lucide-react";
 
 const navItems = [
@@ -30,6 +31,7 @@ const navItems = [
   { href: "/usage", label: "Usage", icon: BarChart3 },
   { href: "/logs", label: "Logs", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/help", label: "Help", icon: BookOpen },
 ];
 
 export function Sidebar() {
