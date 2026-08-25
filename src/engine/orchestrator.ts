@@ -11,7 +11,7 @@ import {
   CanonicalDelta,
 } from "./canonical";
 import { getAdapter } from "./adapters";
-import { classifyError, ErrorClassification } from "./error-classifier";
+import { ErrorClassification } from "./error-classifier";
 import {
   applyFailure,
   resetKeyHealth,
@@ -56,8 +56,15 @@ import {
   getPoolRecoveryInfo,
   waitForPoolRecovery,
   readPoolKeyStatuses,
+  readPoolKeyPenaltyInfo,
   recoveryWaitMaxMs,
 } from "./routing/pool-recovery";
+import { shouldEmitExhaustedCompletion } from "./routing/exhausted-pool-policy";
+import {
+  backoffAfterFailure,
+  MAX_ATTEMPTS,
+} from "./routing/retry-backoff";
+import { performKeyAttemptWithRetry } from "./routing/attempt";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -236,14 +243,32 @@ export async function orchestrate(
   }
 
   if (allCandidates.length === 0) {
-    // No routable/healthy key remains. Normally this is NOT a hard failure and
-    // the caller returns a pre-defined "pool exhausted" completion so the agent
-    // stops instead of retrying forever. HOWEVER — if this pool can recover on
-    // its own (a PENALIZED/COOLDOWN key whose penaltyExpiresAt is in the
-    // future), we instead WAIT for a key to recover and retry the request, so
-    // an autonomous client never sees an error; it just waits and gets the
-    // answer once a key is healthy again.
-    if (recoveryInfo.recoverable && !recoveryInfo.hasActive) {
+    // No routable/healthy key remains. We must decide whether to WAIT for a key
+    // to recover (let the autonomous agent hang until an answer is possible) or
+    // EMIT the pre-defined "pool exhausted" completion so the agent STOPS.
+    //
+    // Two independent gates, both must pass to wait:
+    //   (a) This pool can recover on its own — a PENALIZED/COOLDOWN key whose
+    //       penaltyExpiresAt is in the future will be flipped back to ACTIVE.
+    //   (b) The SHORTEST remaining penalty is under the exhausted threshold
+    //       (default 30 min). If every penalty is LONG, the pool is genuinely
+    //       down for the foreseeable future — telling the agent to stop is
+    //       better than letting it hang for hours.
+    //
+    // Task 02 policy: the pre-defined message is ONLY emitted when all keys are
+    // exhausted AND the lowest penalty exceeds the threshold. Otherwise the
+    // request stays in the queue until a key's penalty expires and it is
+    // released back to ACTIVE.
+    const recoverable = recoveryInfo.recoverable && !recoveryInfo.hasActive;
+    const cheapWait =
+      !recoveryInfo.hasActive &&
+      !shouldEmitExhaustedCompletion(
+        resolvedPool.members.flatMap((m) =>
+          m.keys.map((k) => ({ status: k.status, penaltyExpiresAt: k.penaltyExpiresAt }))
+        )
+      );
+
+    if (recoverable && cheapWait) {
       // Announce that we're holding the request for pool recovery.
       recordFlowEvent({
         requestId,
@@ -275,7 +300,8 @@ export async function orchestrate(
       // Timed out — fall through to the exhausted-pool response.
     }
 
-    // Exhausted (either not recoverable, or the recovery wait timed out).
+    // Exhausted (either not recoverable, the penalty is too long to wait, or
+    // the recovery wait timed out). Only now do we emit the pre-defined message.
     await createRequestLog({
       poolId: logPoolId,
       apiKeyId: null,
@@ -483,42 +509,63 @@ export async function orchestrate(
         member.providerModelName
       );
 
-      // Make the request
-      const response = await fetch(url, {
-        method: "POST",
-        headers,
-        body,
-        signal: AbortSignal.timeout(300_000), // 5 min timeout
-      });
+      // Make the request. Task 04: transient server/network errors are silently
+      // retried on the SAME key with an increasing backoff (3→6→10→15→30s) so an
+      // autonomous agent never sees a spurious failure. Only when the retry
+      // budget is exhausted (or the error is non-retriable) do we apply a health
+      // action / penalty. `performKeyAttemptWithRetry` never throws.
+      const attempt = await performKeyAttemptWithRetry(
+        { url, headers, body },
+        adapter,
+        member.apiFormat,
+        async (info, attemptNum) => {
+          // Each silent retry is logged as a transient failure (no penalty yet),
+          // so /logs shows the real provider message and the backoff progression.
+          await createRequestLog({
+            poolId: logPoolId,
+            apiKeyId: key.apiKeyId,
+            providerModelId: member.providerModelId,
+            tier: tierLabel,
+            outcome: "FAILURE",
+            errorClassification: info.classification,
+            httpStatus: info.httpStatus,
+            latencyMs: Date.now() - startTime,
+            requestedVirtualModel: canonicalRequest.model,
+            providerErrorMessage: info.providerErrorMessage,
+            providerErrorCode: info.providerErrorCode,
+            gatewayErrorMessage: info.message,
+          });
+          console.error(
+            `[orchestrator] key=${key.apiKeyId.slice(0, 8)} transient ` +
+              `(${info.classification} ${info.httpStatus}) attempt ${attemptNum}/${MAX_ATTEMPTS} — ` +
+              `waiting ${(backoffAfterFailure(attemptNum) / 1000).toFixed(0)}s before retry`
+          );
+        }
+      );
 
       const latencyMs = Date.now() - startTime;
 
-      if (!response.ok) {
-        const errorBody = await response.text();
-        const parsed = adapter.parseError(errorBody, response.status);
-        const classified = classifyError(
-          response.status,
-          parsed.providerErrorCode,
-          parsed.providerErrorMessage,
-          member.apiFormat
-        );
+      if (!attempt.ok) {
+        const { classification, providerErrorMessage, providerErrorCode, httpStatus, message } = attempt;
 
         // Apply health action (pass the raw provider message/code so the
         // penalty engine can detect WHICH limit was hit — RPM/TPM/RPD/TPD).
+        // Network failures that were not retriable (e.g. exhausted) also
+        // penalize. INVALID_REQUEST is never penalized.
         await applyFailure({
           apiKeyId: key.apiKeyId,
-          errorClassification: classified.classification,
-          providerErrorMessage: classified.providerErrorMessage,
-          providerErrorCode: classified.providerErrorCode,
+          errorClassification: classification as ErrorClassification,
+          providerErrorMessage,
+          providerErrorCode,
         });
 
         // Auto-calibration: scale this key's limits down on a throttle hit so
         // it stops tripping penalties and finds the real sustainable ceiling.
-        if (classified.classification === "RATE_LIMITED") {
+        if (classification === "RATE_LIMITED") {
           const newLimits = await handleAutoCalibrationFailure(
             key.apiKeyId,
-            classified.classification,
-            classified.providerErrorMessage
+            classification,
+            providerErrorMessage
           );
           if (newLimits) {
             console.error(
@@ -536,13 +583,13 @@ export async function orchestrate(
           providerModelId: member.providerModelId,
           tier: tierLabel,
           outcome: "FAILURE",
-          errorClassification: classified.classification,
-          httpStatus: response.status,
+          errorClassification: classification,
+          httpStatus,
           latencyMs,
           requestedVirtualModel: canonicalRequest.model,
-          providerErrorMessage: classified.providerErrorMessage,
-          providerErrorCode: classified.providerErrorCode,
-          gatewayErrorMessage: classified.providerErrorMessage,
+          providerErrorMessage,
+          providerErrorCode,
+          gatewayErrorMessage: message,
         });
 
         errors.push({
@@ -550,9 +597,9 @@ export async function orchestrate(
           apiKeyLabel: key.apiKeyLabel,
           providerName: member.providerName,
           modelName: member.displayName,
-          classification: classified.classification,
-          httpStatus: response.status,
-          message: classified.providerErrorMessage,
+          classification,
+          httpStatus,
+          message,
         });
 
         // The upstream rejected the request, so the reservation we took did
@@ -573,12 +620,14 @@ export async function orchestrate(
         });
 
         // Don't retry invalid requests
-        if (classified.classification === "INVALID_REQUEST") {
+        if (classification === "INVALID_REQUEST") {
           return { success: false, errors };
         }
 
         continue;
       }
+
+      const response = attempt.response!;
 
       // Success!
       await resetKeyHealth(key.apiKeyId);
@@ -735,9 +784,41 @@ export async function orchestrate(
   }
 
   // All candidates exhausted: every routable key was attempted and failed in
-  // this call. Each per-attempt failure was already logged. Mark the pool as
-  // exhausted so the caller returns a pre-defined completion instead of a hard
-  // error (autonomous agents must stop, not retry forever).
+  // this call. Each per-attempt failure was already logged. Before emitting the
+  // "pool exhausted" completion (task 02), re-check the policy on the FRESH key
+  // state — the loop may have just penalized every key. If the shortest pending
+  // penalty is under the exhausted threshold, hold the request and wait for a
+  // key to recover instead of telling an autonomous agent to stop.
+  const freshPenaltyInfo = await readPoolKeyPenaltyInfo(resolvedPool.id);
+  if (!shouldEmitExhaustedCompletion(freshPenaltyInfo)) {
+    recordFlowEvent({
+      requestId,
+      poolId: resolvedPool.id,
+      apiKeyId: null,
+      poolName: resolvedPool.name,
+      apiKeyLabel: null,
+      providerName: null,
+      stage: "queued",
+    });
+    console.error(
+      `[orchestrator] pool=${resolvedPool.name} all keys just failed with a SHORT penalty — ` +
+        `waiting for recovery instead of emitting exhausted completion`
+    );
+
+    const recovered = await waitForPoolRecovery(resolvedPool.id, recoveryDeadline);
+    if (recovered) {
+      await refreshResolvedPoolStatuses(resolvedPool);
+      return orchestrate(canonicalRequest, resolvedPool, {
+        requestId,
+        priorErrors: errors,
+        deadline: recoveryDeadline,
+      });
+    }
+    // Timed out — fall through to the exhausted completion.
+  }
+
+  // Mark the pool as exhausted so the caller returns a pre-defined completion
+  // instead of a hard error (autonomous agents must stop, not retry forever).
   return { success: false, exhaustedPool: true, errors };
 }
 

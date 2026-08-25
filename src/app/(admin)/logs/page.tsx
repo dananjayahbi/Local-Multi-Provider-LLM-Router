@@ -24,7 +24,18 @@ import { LogDetailPanel, type LogEntry } from "@/components/logs/log-detail-pane
 
 function OutcomeBadge({ outcome, classification }: { outcome: string; classification: string | null }) {
   if (outcome === "SUCCESS") return <Badge variant="success">Success</Badge>;
-  return <Badge variant="destructive">{classification || "FAILURE"}</Badge>;
+  const label = classification
+    ? {
+        QUOTA_EXCEEDED: "Quota Exceeded",
+        RATE_LIMITED: "Rate Limited",
+        SERVER_ERROR: "Server Error",
+        NETWORK_ERROR: "Network Error",
+        AUTH_ERROR: "Auth Error",
+        INVALID_REQUEST: "Invalid Request",
+        NO_HEALTHY_KEY: "Pool Exhausted",
+      }[classification] ?? classification
+    : "FAILURE";
+  return <Badge variant="destructive">{label}</Badge>;
 }
 
 export default function LogsPage() {

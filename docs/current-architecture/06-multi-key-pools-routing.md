@@ -128,6 +128,22 @@ const LIMIT_PENALTY_S = {
 Key is marked `PENALIZED` with `penaltyExpiresAt`; the selector skips penalized keys
 unless no ACTIVE key can serve the request.
 
+### 3.2 Silent server-error retry (Task: retry-backoff)
+
+Transient, non-limit errors (`SERVER_ERROR`, `NETWORK_ERROR`, `UNKNOWN`) are **not**
+penalized immediately. The orchestrator silently retries the same key with an increasing
+backoff — 3s → 6s → 10s → 15s → 30s — up to **5 retries** (6 total attempts). Only after
+the budget is exhausted does it apply a **Level-1 penalty**. Rate limits, quota, auth and
+invalid requests are never silently retried.
+
+### 3.3 Exhausted-pool hold vs. emit (Task: exhausted-pool-policy)
+
+When every key in a pool is exhausted, the pre-defined "pool exhausted" completion is only
+returned when the **shortest remaining penalty** exceeds `EXHAUSTED_MIN_PENALTY_SECONDS`
+(default **30 min**). Otherwise the request stays **queued** (via the pool-recovery wait)
+until a key's penalty expires and it is released — an autonomous agent simply waits and
+gets the answer once a key is healthy again.
+
 ---
 
 ## 4. Caching-Aware Key Selection (Tasks 03 & 05)

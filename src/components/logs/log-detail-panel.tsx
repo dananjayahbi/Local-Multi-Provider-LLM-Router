@@ -46,6 +46,21 @@ function Detail({
   );
 }
 
+/** Human-friendly label for a classification slug (badge + list). */
+function classificationLabel(classification: string | null): string {
+  if (!classification) return "FAILURE";
+  switch (classification) {
+    case "QUOTA_EXCEEDED": return "Quota Exceeded";
+    case "RATE_LIMITED": return "Rate Limited";
+    case "SERVER_ERROR": return "Server Error";
+    case "NETWORK_ERROR": return "Network Error";
+    case "AUTH_ERROR": return "Auth Error";
+    case "INVALID_REQUEST": return "Invalid Request";
+    case "NO_HEALTHY_KEY": return "Pool Exhausted";
+    default: return classification;
+  }
+}
+
 /**
  * Renders the expanded detail for a single log row. For failures it surfaces
  * both the provider's raw response and the message the gateway pushed to the
@@ -65,14 +80,19 @@ export function LogDetailPanel({ log }: { log: LogEntry }) {
         <Detail label="API Key" value={log.apiKey?.label || "?"} />
         <Detail label="Prompt Tokens" value={log.promptTokens ?? "?"} />
         <Detail label="Completion Tokens" value={log.completionTokens ?? "?"} />
-        <Detail label="Classification" value={log.errorClassification || "None"} />
+        <Detail label="Classification" value={classificationLabel(log.errorClassification)} />
         <Detail label="Tier" value={log.tier || "N/A"} />
       </div>
 
       {isFailure && (
         <div className="space-y-3 rounded-md border border-destructive/30 bg-destructive/5 p-3">
           <div className="flex items-center gap-2">
-            <Badge variant="destructive">{log.errorClassification || "FAILURE"}</Badge>
+            <Badge variant="destructive">{classificationLabel(log.errorClassification)}</Badge>
+            {log.httpStatus ? (
+              <Badge variant="outline" className="font-mono text-[10px]">
+                HTTP {log.httpStatus}
+              </Badge>
+            ) : null}
           </div>
 
           {/* The PROVIDER's raw response */}
@@ -93,7 +113,7 @@ export function LogDetailPanel({ log }: { log: LogEntry }) {
           ) : null}
 
           {/* What the GATEWAY surfaced to the client */}
-          {gatewayMsg ? (
+          {gatewayMsg && gatewayMsg !== providerMsg ? (
             <div className="space-y-1">
               <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Gateway sent to client
@@ -104,10 +124,12 @@ export function LogDetailPanel({ log }: { log: LogEntry }) {
             </div>
           ) : null}
 
-          {/* Fallback if only a classification is known */}
+          {/* Fallback if only the HTTP status is known */}
           {!providerMsg && !gatewayMsg && (
             <p className="text-xs text-muted-foreground">
-              No detailed provider/gateway error message was captured for this request.
+              {log.httpStatus
+                ? `No detailed message captured — provider returned HTTP ${log.httpStatus}.`
+                : "No detailed provider/gateway error message was captured for this request."}
             </p>
           )}
         </div>

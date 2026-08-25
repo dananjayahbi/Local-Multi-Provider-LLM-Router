@@ -16,13 +16,14 @@ import {
 } from "@/engine/health-engine";
 
 /** Default max time to hold a request waiting for a key to recover. */
-export const DEFAULT_RECOVERY_WAIT_MS = 240_000; // 4 minutes (under the 5-min route maxDuration)
+export const DEFAULT_RECOVERY_WAIT_MS = 290_000; // 4m50s (kept just under the 5-min route maxDuration)
 /** How often the recovery loop re-checks the DB. */
 export const RECOVERY_POLL_MS = 2_000;
 /** Hard ceiling so a misconfigured env can't cause a multi-hour hang. Kept under
  *  the gateway route's maxDuration (300s) so the wait completes before the
- *  function is cut off. */
-const MAX_RECOVERY_WAIT_MS = 240_000; // 4 minutes
+ *  function is cut off. Raising this lets a SHORT penalty (under the exhausted
+ *  threshold) recover in-place instead of forcing the exhausted completion. */
+const MAX_RECOVERY_WAIT_MS = 290_000; // 4m50s
 
 /** Resolve the configured max wait (ms). 0 disables waiting entirely. */
 export function recoveryWaitMaxMs(): number {
@@ -97,6 +98,28 @@ export async function readPoolKeyStatuses(
     statuses.set(j.apiKey.id, j.apiKey.status);
   }
   return statuses;
+}
+
+/**
+ * Re-read status + penaltyExpiresAt for every key in a pool, returning a small
+ * shape the exhausted-pool policy can reason about. Used after the routing loop
+ * penalizes keys so we know how long the shortest pending penalty is.
+ */
+export async function readPoolKeyPenaltyInfo(
+  poolId: string
+): Promise<PoolRecoveryKey[]> {
+  const pool = await prisma.pool.findUnique({
+    where: { id: poolId },
+    select: {
+      poolApiKeys: {
+        select: { apiKey: { select: { status: true, penaltyExpiresAt: true } } },
+      },
+    },
+  });
+  return (pool?.poolApiKeys ?? []).map((j) => ({
+    status: j.apiKey.status,
+    penaltyExpiresAt: j.apiKey.penaltyExpiresAt,
+  }));
 }
 
 function delay(ms: number): Promise<void> {

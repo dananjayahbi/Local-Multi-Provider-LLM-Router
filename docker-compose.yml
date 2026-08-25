@@ -31,6 +31,11 @@ services:
       # How long (seconds) the gateway holds a request when every key in a pool
       # is penalized, waiting for one to recover before retrying. 0 = disabled.
       - RECOVERY_WAIT_MAX_SECONDS=${RECOVERY_WAIT_MAX_SECONDS:-240}
+      # Once every key in a pool is exhausted, the pre-defined "pool exhausted"
+      # completion is only emitted when the SHORTEST remaining penalty exceeds
+      # this value (seconds). Shorter penalties keep the request queued until a
+      # key recovers. Default 1800 (30 min).
+      - EXHAUSTED_MIN_PENALTY_SECONDS=${EXHAUSTED_MIN_PENALTY_SECONDS:-1800}
     volumes:
       - router-db:/app/prisma
     restart: unless-stopped

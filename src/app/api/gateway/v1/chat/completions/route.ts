@@ -431,6 +431,9 @@ export async function POST(request: NextRequest) {
           httpStatus: response.status,
           latencyMs,
           requestedVirtualModel: requestedModel,
+          providerErrorMessage: classified.providerErrorMessage,
+          providerErrorCode: classified.providerErrorCode,
+          gatewayErrorMessage: classified.providerErrorMessage,
         });
 
         // Upstream rejected it — release the reservation so the local counter

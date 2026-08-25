@@ -244,8 +244,14 @@ flowchart TD
     START([Start: orchestrate]) --> RECOVER[checkAndRecoverExpiredPenalties]
     RECOVER --> BUILD[buildCandidates — Tier 1 + Tier 2]
     BUILD --> CHECK_EMPTY{Candidates empty?}
-    CHECK_EMPTY -->|Yes| FAIL_RETURN[Return failure + errors]
+    CHECK_EMPTY -->|Yes| POLICY{Policy: recoverable & short penalty?}
     CHECK_EMPTY -->|No| LOOP_START[Iterate candidates]
+
+    POLICY -->|Wait| WAIT_REC[waitForPoolRecovery]
+    WAIT_REC -->|Recovered| RECURSE[Refresh statuses & re-orchestrate]
+    WAIT_REC -->|Timeout| EXHAUST[Emit exhausted-pool completion]
+
+    POLICY -->|No / terminal| EXHAUST
 
     LOOP_START --> RATE_CHECK{Rate limit OK?}
     RATE_CHECK -->|Wait needed| WAIT[waitForApiKeyRateLimit]
@@ -253,14 +259,21 @@ flowchart TD
     RATE_CHECK -->|OK| DECRYPT[Decrypt API key]
     
     DECRYPT --> ADAPTER[getAdapter → adapter.buildRequest]
-    ADAPTER --> FETCH[fetch upstream — 5min timeout]
+    ADAPTER --> ATTEMPT[performKeyAttemptWithRetry]
     
-    FETCH --> HTTP_CHECK{HTTP OK?}
-    HTTP_CHECK -->|Error| CLASSIFY[adapter.parseError → classifyError]
+    ATTEMPT --> RETRY_OK{Retriable & budget left?}
+    RETRY_OK -->|Yes| BACKOFF[delay 3/6/10/15/30s & retry]
+    RETRY_OK -->|No| HTTP_CHECK{Attempt OK?}
+
+    BACKOFF --> ATTEMPT
+
+    ATTEMPT -->|Fail| NONGEN[Non-retriable → penalize]
+    HTTP_CHECK -->|Error| CLASSIFY[classifyError]
+    NONGEN --> CLASSIFY
     CLASSIFY --> PENALTY[applyFailure → health penalty]
     PENALTY --> LOG_FAIL[createRequestLog — FAILURE]
     LOG_FAIL --> TERMINAL{Terminal error?}
-    TERMINAL -->|INVALID_REQUEST| FAIL_RETURN
+    TERMINAL -->|INVALID_REQUEST| FAIL_RETURN[Return failure + errors]
     TERMINAL -->|Other| NEXT1[Next candidate]
     NEXT1 --> LOOP_START
 
@@ -272,12 +285,6 @@ flowchart TD
     PARSE --> SETTLE[settleApiKeyRateLimit with actual tokens]
     SETTLE --> LOG_OK[createRequestLog — SUCCESS]
     LOG_OK --> SUCCESS_RETURN[Return canonicalResponse]
-
-    FETCH -->|Network error| NET_ERR[Classify as NETWORK_ERROR]
-    NET_ERR --> NET_PENALTY[applyFailure]
-    NET_PENALTY --> LOG_NET[createRequestLog — FAILURE]
-    LOG_NET --> NEXT2[Next candidate]
-    NEXT2 --> LOOP_START
 ```
 
 ### Streaming Helper (`streamResponse`)
@@ -308,13 +315,69 @@ Maps HTTP status codes + provider error details to a fixed taxonomy.
 | `NETWORK_ERROR` | 0 | Connection failure |
 | `QUOTA_EXCEEDED` | 402, 403 | Billing/payment issues |
 | `QUOTA_EXCEEDED` | 429 | Body contains quota keywords* |
-| `RATE_LIMITED` | 429 | Temporary rate limit |
-| `SERVER_ERROR` | 500-599 | Upstream server error |
+| `RATE_LIMITED` | 429 | Temporary rate limit, or any 4xx whose body mentions rate/limit wording |
+| `SERVER_ERROR` | 500-599, 408, 409, 425 | Upstream server / transient error |
 | `AUTH_ERROR` | 401 | Invalid credentials |
-| `INVALID_REQUEST` | 400 | Malformed request |
-| `UNKNOWN` | Other | Catch-all |
+| `INVALID_REQUEST` | 400, 404 | Malformed request / model-path not found |
+| `UNKNOWN` | Other | Catch-all (treated as retriable downstream) |
 
 *Quota keywords: `"quota"`, `"billing"`, `"insufficient"`, `"balance"`, `"payment"`, `"exceeded"`, `"limit reached"`
+
+> **Task 03 (logs detail)** — `classifyError` now maps otherwise-ambiguous real-world statuses
+> (408, 409, 425, and any 4xx with rate-limit wording) to meaningful categories instead of
+> collapsing them into `UNKNOWN`. The original provider message + code are always carried
+> through to the `RequestLog` so the /logs page can display exactly what happened.
+
+---
+
+## 5b. Exhausted-Pool Policy (`routing/exhausted-pool-policy.ts`)
+
+When a pool has **no routable (healthy) key**, the orchestrator must choose between two
+behaviors for an autonomous agent:
+
+1. **Wait** — hold the request in the queue until a key's penalty expires and it flips back
+   to `ACTIVE`, then retry. The agent simply waits; it sees no error ever.
+2. **Emit** — return the pre-defined "pool exhausted" assistant completion so the agent
+   **stops** (a hard error or a hang would waste its turn).
+
+The decision is governed by the **lowest pending penalty** across the pool:
+
+- If the shortest remaining penalty is **under** `EXHAUSTED_MIN_PENALTY_SECONDS`
+  (default **30 min / 1800s**), the request **stays queued** and the pool-recovery wait
+  holds it until a key is healthy again.
+- If **every** pending penalty is **over** the threshold — or nothing is time-bound
+  (suspended/disabled keys only) — the gateway **emits** the exhausted completion so the
+  agent stops instead of hanging.
+
+```mermaid
+flowchart LR
+    A[No healthy key] --> B{Lowest penalty < threshold?}
+    B -->|Yes| C[Wait for pool recovery]
+    C --> D[Key recovers → retry request]
+    B -->|No / terminal| E[Emit 'pool exhausted' completion]
+```
+
+---
+
+## 5c. Silent Server-Error Retry (`routing/retry-backoff.ts`, `routing/attempt.ts`)
+
+Transient, non-limit errors — `SERVER_ERROR`, `NETWORK_ERROR`, and `UNKNOWN` — are **not**
+penalized immediately. Instead the orchestrator silently retries the **same key** with an
+increasing backoff, so an autonomous agent never sees a spurious failure:
+
+| Failure | Wait before next retry |
+|---|---|
+| initial | 3s |
+| 1st retry | 6s |
+| 2nd retry | 10s |
+| 3rd retry | 15s |
+| 4th retry | 30s |
+| 5th retry | → apply Level-1 penalty |
+
+- Rate limits, quota, auth errors, and invalid requests are **never** silently retried —
+  they go straight to the penalty / rejection path (they have their own semantics).
+- Only after the **5-retry budget** is exhausted does the orchestrator apply a **Level-1
+  penalty** (via `applyFailure`) and move on to the next candidate.
 
 ---
 
