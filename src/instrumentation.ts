@@ -11,5 +11,13 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { startPenaltyRecoveryLoop } = await import("./lib/penalty-recovery");
     startPenaltyRecoveryLoop();
+
+    // Re-hydrate the in-memory rate-limit windows from durable request logs so
+    // the router remembers recent RPM/TPM/RPD/TPD usage across a PC/container
+    // restart (otherwise it stops pre-throttling and can hit a spurious 429).
+    const { hydrateRateLimitWindows } = await import(
+      "./engine/rate-limit/window-hydrator"
+    );
+    hydrateRateLimitWindows();
   }
 }

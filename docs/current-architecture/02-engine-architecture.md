@@ -536,3 +536,5 @@ Map<apiKeyId, KeyWindowState>
 6. Settle: after response, replace estimated with actual
 
 **Serialization**: Each key's operations are serialized via a promise chain (`state.tail`) to prevent race conditions.
+
+**Durable hydration (post-restart)**: The windows above live **in memory** and would be wiped on a PC/container restart, which would make the router forget recent usage and burst past a provider's real limit (→ spurious 429). On boot `window-hydrator.ts` re-hydrates the windows from durable `RequestLog` **SUCCESS** rows (which record `createdAt` + prompt/completion tokens and are indexed on `[apiKeyId, createdAt]`). Hydration is best-effort and controlled by `RATE_WINDOW_HYDRATION_LOOKBACK_SECONDS` (default 86400 = 24h, covering the daily windows). `pruneExpired` is order-independent so seeded entries can never inflate a counter.

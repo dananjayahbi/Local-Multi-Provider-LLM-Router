@@ -49,21 +49,14 @@ function getKeyState(apiKeyId: string): KeyWindowState {
 }
 
 function pruneExpired(state: KeyWindowState, now: number): void {
-  while (state.requestTimestamps.length > 0 && now - state.requestTimestamps[0] >= WINDOW_MS) {
-    state.requestTimestamps.shift();
-  }
-  while (state.tokenRecords.length > 0 && now - state.tokenRecords[0].timestamp >= WINDOW_MS) {
-    state.tokenRecords.shift();
-  }
-  while (state.dailyRequestTs.length > 0 && now - state.dailyRequestTs[0] >= DAY_WINDOW_MS) {
-    state.dailyRequestTs.shift();
-  }
-  while (
-    state.dailyTokenRecords.length > 0 &&
-    now - state.dailyTokenRecords[0].timestamp >= DAY_WINDOW_MS
-  ) {
-    state.dailyTokenRecords.shift();
-  }
+  // Order-independent pruning: drop entries older than their window regardless
+  // of insertion order. Seeded entries from durable history may not be strictly
+  // ascending in rare cases, so relying on front-shift would leave stale entries
+  // at the end and inflate the counters (causing over-throttling).
+  state.requestTimestamps = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
+  state.tokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
+  state.dailyRequestTs = state.dailyRequestTs.filter((ts) => now - ts < DAY_WINDOW_MS);
+  state.dailyTokenRecords = state.dailyTokenRecords.filter((r) => now - r.timestamp < DAY_WINDOW_MS);
 }
 
 function getRpmWaitMs(state: KeyWindowState, now: number, rpmLimit: number | null): number {
@@ -290,6 +283,52 @@ export function getKeyUsageSnapshot(apiKeyId: string): KeyUsage | null {
     totalTokensServed: state.tokenRecords.reduce((s, r) => s + r.tokens, 0),
     cachedTokensSaved: 0,
   };
+}
+
+// ─── Durable-window seeding (post-restart hydration) ───
+// After a PC/container restart the in-memory windows are empty. We re-hydrate
+// them from durable SUCCESS request logs so the router immediately remembers
+// recent RPM/TPM/RPD/TPD usage and keeps pre-throttling — otherwise it would
+// burst past a provider's real limit and incur a spurious 429 penalty.
+
+export interface SeedWindowEntry {
+  /** Epoch ms of the request. */
+  timestamp: number;
+  /** Tokens consumed by this request (prompt + completion). */
+  tokens: number;
+}
+
+/**
+ * Inject reconstructed usage into a key's window state. Idempotent: existing
+ * state is preserved (only new entries are appended), and old entries are
+ * pruned by the next `pruneExpired` call. Safe to call on a fresh process.
+ */
+export function seedRateLimitWindows(
+  apiKeyId: string,
+  entries: SeedWindowEntry[]
+): void {
+  if (!entries.length) return;
+  const state = getKeyState(apiKeyId);
+  const now = Date.now();
+
+  for (const entry of entries) {
+    // Skip anything already outside both the minute and daily windows.
+    if (now - entry.timestamp >= DAY_WINDOW_MS) continue;
+    if (!Number.isFinite(entry.timestamp) || entry.timestamp <= 0) continue;
+
+    state.requestTimestamps.push(entry.timestamp);
+    state.tokenRecords.push({
+      reservationId: crypto.randomUUID(),
+      timestamp: entry.timestamp,
+      tokens: Math.max(1, entry.tokens),
+    });
+    state.dailyRequestTs.push(entry.timestamp);
+    state.dailyTokenRecords.push({
+      reservationId: crypto.randomUUID(),
+      timestamp: entry.timestamp,
+      tokens: Math.max(1, entry.tokens),
+    });
+  }
 }
 
 // ─── Live Snapshot (for charts + queue indicator) ──────

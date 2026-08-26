@@ -36,6 +36,11 @@ services:
       # this value (seconds). Shorter penalties keep the request queued until a
       # key recovers. Default 1800 (30 min).
       - EXHAUSTED_MIN_PENALTY_SECONDS=${EXHAUSTED_MIN_PENALTY_SECONDS:-1800}
+      # How far back (seconds) the router looks at durable SUCCESS request logs
+      # on boot to re-hydrate its in-memory RPM/TPM/RPD/TPD sliding windows so
+      # it remembers recent usage across a PC/container restart and never stops
+      # pre-throttling (which would cause a spurious provider 429). 0 = disable.
+      - RATE_WINDOW_HYDRATION_LOOKBACK_SECONDS=${RATE_WINDOW_HYDRATION_LOOKBACK_SECONDS:-86400}
     volumes:
       - router-db:/app/prisma
     restart: unless-stopped
