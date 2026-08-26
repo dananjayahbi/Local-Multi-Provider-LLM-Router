@@ -4,6 +4,7 @@ import {
   CanonicalResponse,
   CanonicalDelta,
   contentToParts,
+  normalizeProviderErrorCode,
 } from "../canonical";
 
 function generateId(): string {
@@ -218,7 +219,7 @@ export const responsesAdapter: ProviderAdapter = {
       return {
         httpStatus: statusCode,
         providerErrorMessage: raw.error?.message || raw.message || `HTTP ${statusCode}`,
-        providerErrorCode: raw.error?.code || raw.error?.type || null,
+        providerErrorCode: normalizeProviderErrorCode(raw.error?.code || raw.error?.type),
       };
     } catch {
       return {

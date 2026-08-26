@@ -44,7 +44,18 @@ import {
   getConversationState,
   setConversationKey,
   setPendingInjection,
+  clearConversationKey,
 } from "./routing/conversation";
+import {
+  resolveSessionId,
+} from "./routing/session-id";
+import {
+  acquireSessionLock,
+  getSessionLockedKey,
+  releaseSessionLock,
+  releaseSessionLockForKey,
+  isKeyLockedByOtherSession,
+} from "./routing/session-lock";
 import {
   withoutTools,
 } from "./routing/empty-completion";
@@ -183,6 +194,15 @@ export interface OrchestrateOptions {
    * queued→assigned→success chain) under a single id instead of splitting it.
    */
   requestId?: string;
+  /**
+   * Stable identifier for the originating chat session (Copilot conversation /
+   * VSCode window). When present the orchestrator locks ONE key per session so
+   * concurrent sessions never collide on the same pool key — each session keeps
+   * its own key (preserving the provider prompt-cache discount) instead of
+   * sharing a single key and exhausting it. May be null when the request carries
+   * no session signal, in which case legacy single-session routing is used.
+   */
+  sessionId?: string;
   /** Prior per-attempt errors accumulated before a recovery-retry. */
   priorErrors?: AttemptError[];
   /**
@@ -213,6 +233,14 @@ export async function orchestrate(
   // Establish a single recovery budget for the request. If the caller didn't
   // pass one (first attempt), derive it from the configured max wait now.
   const recoveryDeadline = opts.deadline ?? Date.now() + recoveryWaitMaxMs();
+
+  // ── Multi-session key lock ───────────────────────────
+  // A Copilot/VSCode session holds ONE key per pool. Routing a session's
+  // requests to its own key preserves the provider's prompt-cache discount and
+  // stops two concurrent sessions from exhausting a single key together. When
+  // the caller passed no explicit sessionId, resolve one from the request
+  // (the gateway route) — the orchestrator accepts it directly.
+  const sessionId = opts.sessionId ?? null;
 
   // ── Pool recovery introspection ──────────────────────
   // Look at ALL keys in the pool, not just routable ones, to decide whether
@@ -339,11 +367,31 @@ export async function orchestrate(
   //   ROUND_ROBIN / PRIORITY — simple deterministic ordering (strategies.ts).
   //   KEY_AWARE (default)    — caching-aware selector using conversation
   //                            affinity + live rate-limiter usage (selector.ts).
-  const conv = getConversationState(resolvedPool.id);
+  const conv = getConversationState(resolvedPool.id, sessionId);
   const spec = {
     promptTokens: estimateTokensForRateLimit(canonicalRequest),
     completionBudget: canonicalRequest.max_tokens ?? 1024,
   };
+
+  // ── Multi-session locking: filter candidates ─────────
+  // A session must not route to a key another session holds. We also pin the
+  // session to its currently held key (if still healthy) so the prompt-cache
+  // discount is preserved across turns, while still allowing failover when the
+  // locked key is unavailable. `acquireSessionLock` returns the session's key
+  // (picking the best free candidate if it had none), or null when every key is
+  // held by another session — in which case the session waits/queues as if the
+  // pool were exhausted for it.
+  let sessionKeyId: string | null = null;
+  if (sessionId) {
+    const locked = acquireSessionLock(sessionId, resolvedPool.id, allCandidates.map((c) => c.key));
+    sessionKeyId = locked ? locked.keyId : null;
+    if (!sessionKeyId) {
+      console.error(
+        `[orchestrator] session=${sessionId.slice(0, 12)} pool=${resolvedPool.name} — ` +
+          `all keys are locked by other sessions, holding for a free key`
+      );
+    }
+  }
 
   let orderedCandidates: Candidate[];
   if (isSimpleStrategy(resolvedPool.routingStrategy)) {
@@ -378,10 +426,35 @@ export async function orchestrate(
       .map((o) => ({ key: o.candidate, member: memberById.get(o.candidate.apiKeyId)! }));
   }
 
+  // ── Apply session-lock exclusions to the ordered list ─
+  // (1) If this session already holds a key that is still in the pool, MOVE it
+  //     to the front so it is preferred for the cache discount (unless it is
+  //     unhealthy, in which case failover below will skip it).
+  // (2) Drop any candidate locked by a DIFFERENT session.
+  if (sessionId) {
+    const held = getSessionLockedKey(sessionId, resolvedPool.id);
+    const poolKeyIds = new Set(allCandidates.map((c) => c.key.apiKeyId));
+    if (held && poolKeyIds.has(held.keyId)) {
+      // Re-acquire to refresh lastUsedAt, then hoist the held key to front.
+      acquireSessionLock(sessionId, resolvedPool.id, allCandidates.map((c) => c.key));
+      orderedCandidates.sort((a, b) => {
+        if (a.key.apiKeyId === held.keyId) return -1;
+        if (b.key.apiKeyId === held.keyId) return 1;
+        return 0;
+      });
+    }
+    // Exclude keys another session holds.
+    orderedCandidates = orderedCandidates.filter(
+      (c) => !isKeyLockedByOtherSession(sessionId, resolvedPool.id, c.key.apiKeyId)
+    );
+  }
+
   if (orderedCandidates.length === 0) {
     // Every otherwise-healthy key was excluded by the routing selector
-    // (limits/context fit). Treat as exhausted so the caller returns a
-    // pre-defined completion instead of a hard error.
+    // (limits/context fit) OR is locked by a concurrent session. Treat as
+    // exhausted so the caller returns a pre-defined completion instead of a
+    // hard error — but for a lock-only exclusion we'd rather wait, so the
+    // recovery block below re-checks with fresh key state.
     await createRequestLog({
       poolId: logPoolId,
       apiKeyId: null,
@@ -559,6 +632,14 @@ export async function orchestrate(
           providerErrorCode,
         });
 
+        // ── Multi-session: release any session lock on this key ──
+        // The key just got penalized (or is otherwise unusable), so it must not
+        // stay pinned to a session — another session may pick it up once it
+        // recovers. Also drop THIS session's affinity for it so the selector
+        // doesn't keep preferring a key in cooldown on the next turn.
+        releaseSessionLockForKey(resolvedPool.id, key.apiKeyId);
+        if (sessionId) clearConversationKey(resolvedPool.id, sessionId);
+
         // Auto-calibration: scale this key's limits down on a throttle hit so
         // it stops tripping penalties and finds the real sustainable ceiling.
         if (classification === "RATE_LIMITED") {
@@ -640,7 +721,7 @@ export async function orchestrate(
       // Remember this key as the conversation's current key so the next
       // request for this pool prefers it (provider prompt-cache discount).
       if (resolvedPool.cacheAware) {
-        setConversationKey(resolvedPool.id, key.apiKeyId, spec.promptTokens);
+        setConversationKey(resolvedPool.id, key.apiKeyId, spec.promptTokens, sessionId);
       }
       // If we rotated away from a previous key, the chat context is now
       // uncached on the new key — ask the user (Copilot injection) whether
@@ -652,7 +733,16 @@ export async function orchestrate(
           nextKeyLabel: null,
           promptTokens: spec.promptTokens,
           lastPromptTokens: lastPromptBefore,
-        });
+        }, sessionId);
+      }
+
+      // ── Multi-session: keep this session pinned to its key ──
+      // A successful request confirms the key is healthy — re-acquire the lock
+      // (refreshing lastUsedAt + ensuring this session holds exactly THIS key).
+      // If the session previously held a DIFFERENT key, acquire replaces the
+      // registry entry under the same (session,pool) key, freeing the old one.
+      if (sessionId) {
+        acquireSessionLock(sessionId, resolvedPool.id, [key]);
       }
 
       if (canonicalRequest.stream) {
@@ -736,6 +826,12 @@ export async function orchestrate(
           providerErrorMessage: message,
           providerErrorCode: null,
         });
+      }
+
+      // ── Multi-session: release any session lock on this key ──
+      if (classification !== "UNKNOWN") {
+        releaseSessionLockForKey(resolvedPool.id, key.apiKeyId);
+        if (sessionId) clearConversationKey(resolvedPool.id, sessionId);
       }
 
       // Log failure — capture the network/provider message so /logs can expand.

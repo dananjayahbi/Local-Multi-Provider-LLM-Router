@@ -138,6 +138,28 @@ export interface ProviderAdapter {
   ): { httpStatus: number; providerErrorMessage: string; providerErrorCode: string | null };
 }
 
+/**
+ * Normalize a provider error code into a string (or null). Providers often send
+ * a numeric `error.code` (e.g. `404`, `429`) or an object/array `error.type`,
+ * but the RequestLog `providerErrorCode` column is a `String?`. Passing a raw
+ * number to Prisma throws a validation error, which the orchestrator would
+ * misclassify as `UNKNOWN` and never penalize — producing a phantom "pool
+ * exhausted" while every key is still healthy. Coerce any non-null value to a
+ * safe string so logging always succeeds.
+ */
+export function normalizeProviderErrorCode(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value.length > 0 ? value : null;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  try {
+    const s = JSON.stringify(value);
+    return s && s.length > 0 ? s : null;
+  } catch {
+    return String(value);
+  }
+}
+
 // ─── Helpers ────────────────────────────────────────────
 
 export function normalizeContent(content: string | ContentPart[]): string {

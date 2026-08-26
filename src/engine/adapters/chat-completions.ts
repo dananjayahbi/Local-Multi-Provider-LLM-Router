@@ -8,6 +8,7 @@ import {
   CanonicalMessageData,
   TextContent,
   contentToParts,
+  normalizeProviderErrorCode,
 } from "../canonical";
 import { normalizeCanonicalResponse } from "../response-normalizer";
 import { normalizeReasoningDelta, isBareDelta } from "./stream-helpers";
@@ -153,7 +154,7 @@ export const chatCompletionsAdapter: ProviderAdapter = {
       return {
         httpStatus: statusCode,
         providerErrorMessage: raw.error?.message || raw.message || `HTTP ${statusCode}`,
-        providerErrorCode: raw.error?.code || raw.error?.type || null,
+        providerErrorCode: normalizeProviderErrorCode(raw.error?.code || raw.error?.type),
       };
     } catch {
       return {

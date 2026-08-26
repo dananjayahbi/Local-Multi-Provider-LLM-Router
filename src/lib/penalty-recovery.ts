@@ -51,6 +51,14 @@ async function runRecovery(): Promise<void> {
           `${recoveredCooldowns} cooldown(s)`
       );
     }
+
+    // Sweep stale multi-session key locks (a session that went away, e.g. a
+    // closed VSCode window, must not keep a key pinned forever).
+    const { countStaleLocks } = await import("@/engine/routing/session-lock");
+    const dropped = countStaleLocks();
+    if (dropped > 0) {
+      console.log(`[session-lock] swept ${dropped} stale lock(s)`);
+    }
   } catch (err) {
     // Recovery is best-effort; never throw into the interval.
     console.error("[penalty-recovery] sweep error:", err);

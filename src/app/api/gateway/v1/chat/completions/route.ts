@@ -27,6 +27,7 @@ import {
 } from "@/engine/rate-limit/api-key-rate-limiter";
 import { estimateTokensForRateLimit } from "@/engine/rate-limit/token-estimator";
 import { takePendingInjection } from "@/engine/routing/conversation";
+import { resolveSessionId } from "@/engine/routing/session-id";
 import { buildInjection, InjectionInput, LimitName } from "@/engine/playground";
 import {
   buildExhaustedPoolResponse,
@@ -133,11 +134,22 @@ export async function POST(request: NextRequest) {
     // Provider-level keys can be shared across pools; the same key record is
     // used, so its penalty/limits propagate to every pool that references it.
     const poolKeys = pool.poolApiKeys.map((j) => j.apiKey);
+
+    // ── Multi-session identity ─────────────────────────
+    // Derive a stable session id so this Copilot/VSCode session is pinned to
+    // its own key. Used for per-session locking in the orchestrator. Null is
+    // normalized to undefined so legacy single-session routing is preserved.
+    const sessionId = resolveSessionId({
+      headers: request.headers,
+      body: rawBody,
+      messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
+    }) ?? undefined;
+
     // ── Copilot injection (Task 06-07) ─────────────────
     // If a previous request for this pool rotated keys due to a limit,
     // append the askQuestion guidance so the model can ask the user whether
     // to switch directly or compact the chat (context is now uncached).
-    const pendingInjection = takePendingInjection(pool.id);
+    const pendingInjection = takePendingInjection(pool.id, sessionId);
     let messages = (rawBody.messages as CanonicalRequest["messages"]) || [];
     if (pendingInjection) {
       const guidance = buildInjection("compact_first", {
@@ -211,7 +223,7 @@ export async function POST(request: NextRequest) {
       })),
     };
 
-    const result = await orchestrate(canonicalRequest, resolvedPool);
+    const result = await orchestrate(canonicalRequest, resolvedPool, { sessionId });
 
     // ─── Exhausted pool: no healthy key remained ────────
     // Do NOT return a hard error. Return a valid assistant completion so the

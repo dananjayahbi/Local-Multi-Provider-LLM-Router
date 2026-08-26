@@ -14,6 +14,7 @@ import { prisma } from "@/lib/prisma";
 import { CanonicalRequest, CanonicalDelta } from "@/engine/canonical";
 import { orchestrate, ResolvedPool } from "@/engine/orchestrator";
 import { serializeResponse, serializeDelta, serializeStreamEnd } from "@/engine/serializer";
+import { resolveSessionId } from "@/engine/routing/session-id";
 import {
   buildExhaustedPoolResponse,
   buildExhaustedPoolStream,
@@ -136,7 +137,16 @@ export async function POST(request: NextRequest) {
     ],
   };
 
-  const result = await orchestrate(canonicalRequest, resolvedPool);
+  // ── Multi-session identity ───────────────────────────
+  // Derive a stable session id so an admin chat (or a proxied client) is
+  // pinned to its own key, exactly like the public gateway.
+  const sessionId = resolveSessionId({
+    headers: request.headers,
+    body: body as unknown as Record<string, unknown>,
+    messages: body.messages,
+  }) ?? undefined;
+
+  const result = await orchestrate(canonicalRequest, resolvedPool, { sessionId });
 
   // ─── Exhausted pool: no healthy key remained ────────
   // Return a valid assistant completion so the agent ends its turn instead of

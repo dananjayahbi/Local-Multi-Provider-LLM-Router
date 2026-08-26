@@ -41,6 +41,12 @@ services:
       # it remembers recent usage across a PC/container restart and never stops
       # pre-throttling (which would cause a spurious provider 429). 0 = disable.
       - RATE_WINDOW_HYDRATION_LOOKBACK_SECONDS=${RATE_WINDOW_HYDRATION_LOOKBACK_SECONDS:-86400}
+      # How long (ms) a multi-session key lock survives without any request from
+      # its session touching it before it is swept. 0 = never expire. Default
+      # 60 min — a session that closed its VSCode window stops pinning its key.
+      - SESSION_LOCK_TTL_MS=${SESSION_LOCK_TTL_MS:-3600000}
+      # Log each resolved session id + session→key lock decision (0 = off).
+      - SESSION_ID_DEBUG=${SESSION_ID_DEBUG:-0}
     volumes:
       - router-db:/app/prisma
     restart: unless-stopped
