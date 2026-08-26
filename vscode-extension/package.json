@@ -1,0 +1,92 @@
+{
+  "name": "llm-router-context-compact",
+  "displayName": "LLM Router Context Compaction",
+  "description": "Client-side context compaction for Copilot. Gives the agent a tool to report gateway context usage and compact the conversation natively, so the chat never re-sends bloated history.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Chat",
+    "AI"
+  ],
+  "activationEvents": [
+    "onLanguageModelTool:llm-router_contextUsage",
+    "onLanguageModelTool:llm-router_compactConversation",
+    "onCommand:llmRouter.compactConversation",
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "llm-router_contextUsage",
+        "displayName": "Router Context Usage",
+        "toolReferenceName": "contextUsage",
+        "modelDescription": "Reports the current context usage (prompt tokens, % of window used) for the active chat session as observed by the LLM Router gateway. Call this at the start of a task or when the conversation is long, to decide whether compaction is needed.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(pulse)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "The router virtual model name (e.g. the pool's virtualModelName) to query. Omit to use the gateway's default/latest."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "llm-router_compactConversation",
+        "displayName": "Compact Conversation",
+        "toolReferenceName": "compactConversation",
+        "modelDescription": "Compact the current conversation (client-side) to reduce context size. Replaces the older chat history with a concise summary so the next request doesn't re-send bloated history. Use this when context usage is high (e.g. >60% of the window) or the conversation has become very long.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(archive)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "Optional reason for compacting, for the user's awareness."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    ],
+    "configuration": {
+      "title": "LLM Router Context Compaction",
+      "properties": {
+        "llmRouter.gatewayBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:4006",
+          "description": "Base URL of the LLM Router gateway."
+        },
+        "llmRouter.gatewayKey": {
+          "type": "string",
+          "default": "",
+          "description": "Gateway key (Bearer token). Use a pool key + set defaultModel, or the unified gateway key."
+        },
+        "llmRouter.defaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Default virtual model name to probe when the caller does not supply one (e.g. a pool's virtualModelName)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.4.5"
+  }
+}
