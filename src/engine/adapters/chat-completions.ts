@@ -124,13 +124,21 @@ export const chatCompletionsAdapter: ProviderAdapter = {
           delta: (c.delta || {}) as CanonicalDelta["choices"][0]["delta"],
           finish_reason: c.finish_reason ?? undefined,
         }));
-        // Providers sometimes emit empty choices[] between tool-call handoffs
-        if (choices.length === 0) continue;
+        const usage = raw.usage as CanonicalDelta["usage"];
+        // A final usage-only terminal chunk (OpenAI/OpenRouter/DeepSeek emit
+        // `choices: []` with a populated `usage` at stream end). Dropping it
+        // would discard the ONLY source of streamed prompt/completion counts —
+        // the root cause of pools showing zero tokens. Return it so the
+        // orchestrator can capture usage even though there are no choices.
+        if (choices.length === 0) {
+          if (usage) return { id: raw.id, model: raw.model, choices: [], usage };
+          continue;
+        }
         let canon: CanonicalDelta = {
           id: raw.id,
           model: raw.model,
           choices: choices as CanonicalDelta["choices"],
-          usage: raw.usage,
+          usage,
         };
         // Pass reasoning through so GitHub Copilot renders the collapsible
         // Thinking UI. Normalize OpenRouter's reasoning_details (array) into

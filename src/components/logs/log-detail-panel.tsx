@@ -80,7 +80,14 @@ export function LogDetailPanel({ log }: { log: LogEntry }) {
         <Detail label="API Key" value={log.apiKey?.label || "?"} />
         <Detail label="Prompt Tokens" value={log.promptTokens ?? "?"} />
         <Detail label="Completion Tokens" value={log.completionTokens ?? "?"} />
-        <Detail label="Classification" value={classificationLabel(log.errorClassification)} />
+        <Detail
+          label="Classification"
+          value={
+            log.outcome === "SUCCESS"
+              ? "N/A"
+              : classificationLabel(log.errorClassification)
+          }
+        />
         <Detail label="Tier" value={log.tier || "N/A"} />
       </div>
 

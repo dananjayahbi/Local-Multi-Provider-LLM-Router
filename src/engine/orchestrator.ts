@@ -978,6 +978,14 @@ async function* streamResponse(
         if (!line.trim()) continue;
         const delta = adapter.parseStreamChunk(line);
         if (delta) {
+          // Capture usage from ANY chunk that carries it — particularly the
+          // final usage-only chunk (empty choices[]) OpenAI-compatible
+          // providers emit at stream end. Must run BEFORE the empty-choices
+          // guard below, otherwise that chunk is skipped and tokens are lost.
+          if (delta.usage) {
+            streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
+            streamUsage.completionTokens = delta.usage.completion_tokens ?? streamUsage.completionTokens;
+          }
           // Check for empty choices at stream level
           if (!delta.choices || delta.choices.length === 0) {
             skippedEmptyChoices++;
@@ -990,11 +998,6 @@ async function* streamResponse(
             producedContent = true;
           }
           deltaCount++;
-          // Capture usage from stream chunks (last chunk often has usage)
-          if (delta.usage) {
-            streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
-            streamUsage.completionTokens = delta.usage.completion_tokens ?? streamUsage.completionTokens;
-          }
           yield delta;
         }
       }
@@ -1004,6 +1007,12 @@ async function* streamResponse(
     if (buffer.trim()) {
       const delta = adapter.parseStreamChunk(buffer);
       if (delta) {
+        // Capture usage before the empty-choices branch — a usage-only
+        // terminal chunk may carry counts alongside empty choices[].
+        if (delta.usage) {
+          streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
+          streamUsage.completionTokens = delta.usage.completion_tokens ?? streamUsage.completionTokens;
+        }
         if (!delta.choices || delta.choices.length === 0) {
           skippedEmptyChoices++;
         } else {
@@ -1014,10 +1023,6 @@ async function* streamResponse(
             producedContent = true;
           }
           deltaCount++;
-          if (delta.usage) {
-            streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
-            streamUsage.completionTokens = delta.usage.completion_tokens ?? streamUsage.completionTokens;
-          }
           yield delta;
         }
       }
