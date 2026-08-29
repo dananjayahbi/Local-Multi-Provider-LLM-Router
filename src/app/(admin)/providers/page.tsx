@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,24 +10,21 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Plus, Server, Key, Box, ChevronRight, Pencil, Trash2 } from "lucide-react";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Plus, Server, Key, Box, ChevronRight } from "lucide-react";
+  ProviderForm,
+  type ProviderFormValues,
+} from "@/components/providers/provider-form";
+import { DeleteProviderDialog } from "@/components/providers/delete-provider-dialog";
+import { apiFormatLabel } from "@/lib/api-formats";
 
 interface Provider {
   id: string;
   name: string;
   baseUrl: string;
   apiFormat: string;
+  notes: string | null;
   _count: { apiKeys: number; providerModels: number };
 }
 
@@ -35,16 +32,16 @@ export default function ProvidersPage() {
   const router = useRouter();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
-  const [open, setOpen] = useState(false);
 
-  const [form, setForm] = useState({
-    name: "",
-    baseUrl: "",
-    apiFormat: "CHAT_COMPLETIONS",
-    notes: "",
-  });
+  // Create dialog
+  const [createOpen, setCreateOpen] = useState(false);
+  // Edit dialog
+  const [editOpen, setEditOpen] = useState(false);
+  const [editing, setEditing] = useState<Provider | null>(null);
+  // Delete dialog
+  const [deleting, setDeleting] = useState<Provider | null>(null);
 
-  const loadProviders = () => {
+  const loadProviders = useCallback(() => {
     fetch("/api/admin/providers")
       .then((r) => r.json())
       .then((data) => {
@@ -52,21 +49,47 @@ export default function ProvidersPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  };
+  }, []);
 
-  useEffect(() => { loadProviders(); }, []);
+  useEffect(() => { loadProviders(); }, [loadProviders]);
 
-  const handleCreate = async () => {
+  const handleCreate = async (values: ProviderFormValues) => {
     const res = await fetch("/api/admin/providers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
+      body: JSON.stringify(values),
     });
     if (res.ok) {
-      setOpen(false);
-      setForm({ name: "", baseUrl: "", apiFormat: "CHAT_COMPLETIONS", notes: "" });
+      setCreateOpen(false);
       loadProviders();
+      return true;
     }
+    const err = await res.json().catch(() => ({ error: "Failed to create provider" }));
+    alert(err.error || "Failed to create provider");
+    return false;
+  };
+
+  const openEdit = (provider: Provider) => {
+    setEditing(provider);
+    setEditOpen(true);
+  };
+
+  const handleEdit = async (values: ProviderFormValues) => {
+    if (!editing) return false;
+    const res = await fetch(`/api/admin/providers/${editing.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(values),
+    });
+    if (res.ok) {
+      setEditOpen(false);
+      setEditing(null);
+      loadProviders();
+      return true;
+    }
+    const err = await res.json().catch(() => ({ error: "Failed to update provider" }));
+    alert(err.error || "Failed to update provider");
+    return false;
   };
 
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
@@ -78,59 +101,19 @@ export default function ProvidersPage() {
           <h1 className="text-2xl font-bold tracking-tight">Providers</h1>
           <p className="text-muted-foreground">Manage your upstream LLM providers</p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="mr-2 h-4 w-4" /> Add Provider
-            </Button>
-          </DialogTrigger>
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" /> Add Provider
+          </Button>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Add Provider</DialogTitle>
             </DialogHeader>
-            <div className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <Label>Provider Name</Label>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="e.g., Mimo, Gemini Free Tier"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Base URL</Label>
-                <Input
-                  value={form.baseUrl}
-                  onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-                  placeholder="https://api.example.com/v1"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>API Format</Label>
-                <Select
-                  value={form.apiFormat}
-                  onValueChange={(v) => setForm({ ...form, apiFormat: v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="CHAT_COMPLETIONS">Chat Completions (OpenAI-compatible)</SelectItem>
-                    <SelectItem value="MESSAGES">Messages (Anthropic-style)</SelectItem>
-                    <SelectItem value="RESPONSES">Responses (New OpenAI)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Notes (optional)</Label>
-                <Input
-                  value={form.notes}
-                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                  placeholder="Any notes about this provider"
-                />
-              </div>
-              <Button onClick={handleCreate} className="w-full">Create Provider</Button>
-            </div>
+            <ProviderForm
+              onSubmit={handleCreate}
+              submitLabel="Create Provider"
+              submittingLabel="Creating..."
+            />
           </DialogContent>
         </Dialog>
       </div>
@@ -160,7 +143,7 @@ export default function ProvidersPage() {
                     <span className="font-semibold">{p.name}</span>
                   </div>
                   <div className="flex gap-2">
-                    <Badge variant="outline">{p.apiFormat}</Badge>
+                    <Badge variant="outline">{apiFormatLabel(p.apiFormat)}</Badge>
                     <span className="text-xs text-muted-foreground flex items-center gap-1">
                       <Key className="h-3 w-3" /> {p._count.apiKeys} keys
                     </span>
@@ -169,12 +152,59 @@ export default function ProvidersPage() {
                     </span>
                   </div>
                 </div>
-                <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => openEdit(p)}
+                    title="Edit provider"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setDeleting(p)}
+                    title="Delete provider"
+                  >
+                    <Trash2 className="h-4 w-4 text-red-500" />
+                  </Button>
+                  <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
+
+      {/* Edit Dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Provider</DialogTitle>
+          </DialogHeader>
+          {editing && (
+            <ProviderForm
+              initial={{
+                name: editing.name,
+                baseUrl: editing.baseUrl,
+                apiFormat: editing.apiFormat as ProviderFormValues["apiFormat"],
+                notes: editing.notes ?? "",
+              }}
+              onSubmit={handleEdit}
+              submitLabel="Save Changes"
+              submittingLabel="Saving..."
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteProviderDialog
+        provider={deleting}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        onDeleted={loadProviders}
+      />
     </div>
   );
 }

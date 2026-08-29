@@ -37,22 +37,31 @@ export async function updateProvider(
   return prisma.provider.update({ where: { id }, data });
 }
 
+/**
+ * Delete a provider and everything downstream, with auto-detach:
+ * 1. Detach — remove any PoolMember rows that reference this provider's
+ *    models so no pool keeps a dangling member (auto-detach from pools).
+ * 2. Cascade — delete the provider. The schema's `onDelete: Cascade` on
+ *    ApiKey.provider, ProviderModel.provider and CalibrationSession.provider
+ *    removes all keys, models and calibration history in the same transaction.
+ *
+ * The whole thing runs in a single transaction so a failure never leaves a
+ * half-deleted provider behind.
+ */
 export async function deleteProvider(id: string) {
-  // Check if any of this provider's models are referenced by PoolMembers
-  const blockingPools = await prisma.poolMember.findMany({
-    where: { providerModel: { providerId: id } },
-    include: {
-      pool: { select: { id: true, name: true } },
-      providerModel: { select: { id: true, displayName: true } },
-    },
-  });
+  const modelIds = (
+    await prisma.providerModel.findMany({
+      where: { providerId: id },
+      select: { id: true },
+    })
+  ).map((m) => m.id);
 
-  if (blockingPools.length > 0) {
-    const poolNames = [...new Set(blockingPools.map((m) => m.pool.name))];
-    throw new Error(
-      `Cannot delete provider: its models are referenced by pool(s): ${poolNames.join(", ")}. Remove the models from those pools first.`
-    );
-  }
-
-  await prisma.provider.delete({ where: { id } });
+  await prisma.$transaction([
+    // Auto-detach this provider's models from every pool that uses them.
+    prisma.poolMember.deleteMany({
+      where: { providerModelId: { in: modelIds } },
+    }),
+    // Cascade-delete the provider (models, apiKeys, calibrationSessions).
+    prisma.provider.delete({ where: { id } }),
+  ]);
 }

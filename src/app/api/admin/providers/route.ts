@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAllProviders, createProvider } from "@/engine/data-access/providers";
+import { isValidApiFormat } from "@/lib/api-formats";
 
 export async function GET() {
   try {
@@ -22,7 +23,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!["CHAT_COMPLETIONS", "MESSAGES", "RESPONSES"].includes(apiFormat)) {
+    if (!isValidApiFormat(apiFormat)) {
       return NextResponse.json(
         { error: "apiFormat must be CHAT_COMPLETIONS, MESSAGES, or RESPONSES" },
         { status: 400 }

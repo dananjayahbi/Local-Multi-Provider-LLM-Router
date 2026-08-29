@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getProviderById, updateProvider, deleteProvider } from "@/engine/data-access/providers";
+import { isValidApiFormat } from "@/lib/api-formats";
 
 export async function GET(
   _request: NextRequest,
@@ -24,9 +25,23 @@ export async function PUT(
     const body = await request.json();
     const { name, baseUrl, apiFormat, notes } = body;
 
-    if (apiFormat && !["CHAT_COMPLETIONS", "MESSAGES", "RESPONSES"].includes(apiFormat)) {
+    if (apiFormat && !isValidApiFormat(apiFormat)) {
       return NextResponse.json(
         { error: "apiFormat must be CHAT_COMPLETIONS, MESSAGES, or RESPONSES" },
+        { status: 400 }
+      );
+    }
+
+    if (name !== undefined && (!name || typeof name !== "string")) {
+      return NextResponse.json(
+        { error: "name must be a non-empty string" },
+        { status: 400 }
+      );
+    }
+
+    if (baseUrl !== undefined && (!baseUrl || typeof baseUrl !== "string")) {
+      return NextResponse.json(
+        { error: "baseUrl must be a non-empty string" },
         { status: 400 }
       );
     }

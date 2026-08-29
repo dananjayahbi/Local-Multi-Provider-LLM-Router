@@ -1,0 +1,12 @@
+[
+  {
+    "name": "EXTENSION tsc (noEmit)",
+    "ok": true,
+    "out": "(no diagnostics)"
+  },
+  {
+    "name": "ROOT tsc (noEmit)",
+    "ok": true,
+    "out": "(no diagnostics)"
+  }
+]
