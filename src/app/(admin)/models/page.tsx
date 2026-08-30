@@ -6,11 +6,16 @@ import { Card, CardContent } from "@/components/ui/card";
 import { RefreshCw, Plus } from "lucide-react";
 import { ModelTable, ModelRow } from "@/components/models/model-table";
 import { AddModelDialog } from "@/components/models/add-model-dialog";
+import { SortSelect } from "@/components/ui/sort-select";
 import {
   ModelFilterBar,
   matchesModelFilters,
   ModelFilters,
 } from "@/components/models/model-filter-bar";
+
+function isModelSort(v: string): v is "createdAt" | "name" {
+  return v === "createdAt" || v === "name";
+}
 
 export default function ModelsPage() {
   const [models, setModels] = useState<ModelRow[]>([]);
@@ -23,6 +28,8 @@ export default function ModelsPage() {
     capability: "",
     status: "",
   });
+  const [sortKey, setSortKey] = useState<string>("createdAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const load = useCallback(async () => {
     try {
@@ -47,7 +54,19 @@ export default function ModelsPage() {
 
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
 
-  const filteredModels = models.filter((m) => matchesModelFilters(m, filters));
+  const filteredModels = models
+    .filter((m) => matchesModelFilters(m, filters))
+    .sort((a, b) => {
+      const key = isModelSort(sortKey) ? sortKey : "createdAt";
+      let cmp = 0;
+      if (key === "name") cmp = a.provider.name.localeCompare(b.provider.name);
+      else {
+        const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        cmp = at - bt;
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
 
   return (
     <div className="space-y-6">
@@ -68,12 +87,24 @@ export default function ModelsPage() {
         </div>
       </div>
 
-      <ModelFilterBar
-        value={filters}
-        onChange={setFilters}
-        providers={providers}
-        totalCount={filteredModels.length}
-      />
+      <div className="flex items-center justify-between">
+        <ModelFilterBar
+          value={filters}
+          onChange={setFilters}
+          providers={providers}
+          totalCount={filteredModels.length}
+        />
+        <SortSelect
+          options={[
+            { value: "createdAt", label: "Created date" },
+            { value: "name", label: "Provider name" },
+          ]}
+          value={sortKey}
+          dir={sortDir}
+          onValueChange={setSortKey}
+          onDirChange={setSortDir}
+        />
+      </div>
 
       <Card>
         <CardContent className="pt-6">

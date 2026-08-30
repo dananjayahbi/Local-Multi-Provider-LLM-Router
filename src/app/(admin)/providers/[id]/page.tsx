@@ -32,11 +32,13 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { ManualPenaltyDialog } from "@/components/keys/manual-penalty-dialog";
+import { DeleteModelDialog } from "@/components/models/delete-model-dialog";
 
 interface ApiKeyItem {
   id: string;
   label: string;
   status: string;
+  secret: string | null;
   secretEncrypted: string;
   penaltyLevel: number;
   penaltyExpiresAt: string | null;
@@ -117,12 +119,16 @@ export default function ProviderDetailPage() {
 
   // Key reveal
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+  // Whether the full API key secrets are always visible (local personal tool —
+  // no masking). Defaults to true so keys are shown directly.
+  const [showSecrets, setShowSecrets] = useState(true);
 
   // Dialogs
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [editKeyDialogOpen, setEditKeyDialogOpen] = useState(false);
   const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null);
+  const [deletingModel, setDeletingModel] = useState<ProviderModelItem | null>(null);
 
   const [keyForm, setKeyForm] = useState({ label: "", secret: "", rpmLimit: "", tpmLimit: "", autoCalibration: false });
   const [modelForm, setModelForm] = useState({
@@ -229,20 +235,7 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleDeleteModel = async (modelId: string) => {
-    if (!confirm("Delete this model?")) return;
-    await fetch(`/api/admin/models/${modelId}`, { method: "DELETE" });
-    loadData();
-  };
-
-  const toggleReveal = (keyId: string) => {
-    setRevealedKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(keyId)) next.delete(keyId);
-      else next.add(keyId);
-      return next;
-    });
-  };
+  const toggleSecrets = () => setShowSecrets((s) => !s);
 
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
   if (!provider) return <div className="text-muted-foreground">Provider not found.</div>;
@@ -267,10 +260,20 @@ export default function ProviderDetailPage() {
           <CardTitle className="flex items-center gap-2">
             <Key className="h-4 w-4" /> API Keys ({keys.length})
           </CardTitle>
-          <Dialog open={keyDialogOpen} onOpenChange={setKeyDialogOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm"><Plus className="mr-1 h-3 w-3" /> Add Key</Button>
-            </DialogTrigger>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={toggleSecrets}
+              title={showSecrets ? "Hide API key secrets" : "Show API key secrets"}
+            >
+              {showSecrets ? <EyeOff className="mr-1 h-3 w-3" /> : <Eye className="mr-1 h-3 w-3" />}
+              {showSecrets ? "Hide" : "Show"}
+            </Button>
+            <Dialog open={keyDialogOpen} onOpenChange={setKeyDialogOpen}>
+              <DialogTrigger asChild>
+                <Button size="sm"><Plus className="mr-1 h-3 w-3" /> Add Key</Button>
+              </DialogTrigger>
             <DialogContent>
               <DialogHeader><DialogTitle>Add API Key</DialogTitle></DialogHeader>
               <div className="space-y-4 pt-4">
@@ -316,6 +319,7 @@ export default function ProviderDetailPage() {
               </div>
             </DialogContent>
           </Dialog>
+          </div>
         </CardHeader>
         <CardContent>
           {keys.length === 0 ? (
@@ -330,10 +334,9 @@ export default function ProviderDetailPage() {
                       <StatusChip status={k.status} penaltyLevel={k.penaltyLevel} penaltyExpiresAt={k.penaltyExpiresAt} penaltyType={k.penaltyType} penaltyReason={k.penaltyReason} suspendedReason={k.suspendedReason} />
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span>sk-••••{k.secretEncrypted ? k.secretEncrypted.slice(-4) : "????"}</span>
-                      {revealedKeys.has(k.id) && (
-                        <span className="font-mono text-xs bg-muted px-1 rounded">(encrypted in DB)</span>
-                      )}
+                      <span className="font-mono">
+                        {showSecrets ? (k.secret || `decrypted: ${k.secretEncrypted || "?"}`) : `sk-••••${k.secretEncrypted ? k.secretEncrypted.slice(-4) : "????"}`}
+                      </span>
                       {(k.rpmLimit || k.tpmLimit) && (
                         <span className="flex items-center gap-1 ml-1">
                           <Gauge className="h-3 w-3" />
@@ -444,7 +447,7 @@ export default function ProviderDetailPage() {
                       {m.supportsFunctionCalling && <Badge variant="outline" className="text-xs">🔧 Tools</Badge>}
                     </div>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => handleDeleteModel(m.id)}>
+                  <Button size="sm" variant="ghost" onClick={() => setDeletingModel(m)}>
                     <Trash2 className="h-3 w-3 text-red-500" />
                   </Button>
                 </div>
@@ -501,6 +504,13 @@ export default function ProviderDetailPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Model Dialog */}
+      <DeleteModelDialog
+        model={deletingModel}
+        onOpenChange={(open) => !open && setDeletingModel(null)}
+        onDeleted={loadData}
+      />
     </div>
   );
 }

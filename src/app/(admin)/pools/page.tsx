@@ -23,6 +23,14 @@ import {
 } from "@/components/ui/select";
 import { CopyButton } from "@/components/pools/copy-button";
 import {
+  PoolFilterBar,
+  matchesPoolFilters,
+  comparePools,
+  PoolFilters,
+  PoolSort,
+} from "@/components/pools/pool-filter-bar";
+import { PoolItem } from "@/components/pools/pool-types";
+import {
   Plus,
   Layers,
   CircleCheck,
@@ -37,18 +45,6 @@ import {
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────
-
-interface PoolItem {
-  id: string;
-  name: string;
-  virtualModelName: string;
-  routingStrategy: string;
-  gatewayKey: string;
-  gatewayKeyPrefix: string;
-  _count: { poolMembers: number };
-  healthyKeys: number;
-  totalKeys: number;
-}
 
 interface ProviderOption {
   id: string;
@@ -99,6 +95,14 @@ export default function PoolsPage() {
   const [providerModels, setProviderModels] = useState<Record<string, ModelOption[]>>({});
   const [submitting, setSubmitting] = useState(false);
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+
+  // Filter + sort state
+  const [filters, setFilters] = useState<PoolFilters>({
+    query: "",
+    strategy: "",
+    type: "",
+  });
+  const [sort, setSort] = useState<PoolSort>({ key: "createdAt", dir: "desc" });
 
   function newMember(priority: number): MemberRow {
     return { tempId: Date.now() + Math.random(), providerId: "", providerModelId: "", priority };
@@ -254,6 +258,10 @@ export default function PoolsPage() {
   // ─── Render ───────────────────────────────────────────
 
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
+
+  const filteredPools = pools
+    .filter((p) => matchesPoolFilters(p, filters))
+    .sort((a, b) => comparePools(a, b, sort));
 
   return (
     <div className="space-y-6">
@@ -521,6 +529,14 @@ export default function PoolsPage() {
         </Dialog>
       </div>
 
+      <PoolFilterBar
+        value={filters}
+        onChange={setFilters}
+        sort={sort}
+        onSortChange={setSort}
+        totalCount={filteredPools.length}
+      />
+
       {/* ─── Pool List ─── */}
       {pools.length === 0 ? (
         <Card>
@@ -530,9 +546,15 @@ export default function PoolsPage() {
             <p className="text-sm text-muted-foreground">Create your first pool to start routing requests.</p>
           </CardContent>
         </Card>
+      ) : filteredPools.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+            <p className="text-sm">No pools match your current filters.</p>
+          </CardContent>
+        </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {pools.map((p) => (
+          {filteredPools.map((p) => (
             <Card
               key={p.id}
               className="cursor-pointer hover:shadow-md transition-shadow"

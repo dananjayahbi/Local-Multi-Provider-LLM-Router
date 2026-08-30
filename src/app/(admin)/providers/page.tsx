@@ -18,6 +18,8 @@ import {
 } from "@/components/providers/provider-form";
 import { DeleteProviderDialog } from "@/components/providers/delete-provider-dialog";
 import { apiFormatLabel } from "@/lib/api-formats";
+import { SearchInput } from "@/components/ui/search-input";
+import { SortSelect } from "@/components/ui/sort-select";
 
 interface Provider {
   id: string;
@@ -25,6 +27,7 @@ interface Provider {
   baseUrl: string;
   apiFormat: string;
   notes: string | null;
+  createdAt: string;
   _count: { apiKeys: number; providerModels: number };
 }
 
@@ -40,6 +43,11 @@ export default function ProvidersPage() {
   const [editing, setEditing] = useState<Provider | null>(null);
   // Delete dialog
   const [deleting, setDeleting] = useState<Provider | null>(null);
+
+  // Search + sort state
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<string>("createdAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const loadProviders = useCallback(() => {
     fetch("/api/admin/providers")
@@ -94,6 +102,20 @@ export default function ProvidersPage() {
 
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
 
+  const q = query.trim().toLowerCase();
+  const filteredProviders = providers
+    .filter((p) => !q || `${p.name} ${p.baseUrl} ${p.apiFormat}`.toLowerCase().includes(q))
+    .sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "name") cmp = a.name.localeCompare(b.name);
+      else {
+        const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        cmp = at - bt;
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -118,6 +140,25 @@ export default function ProvidersPage() {
         </Dialog>
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SearchInput
+          value={query}
+          onChange={setQuery}
+          placeholder="Search providers..."
+          className="w-full max-w-xs"
+        />
+        <SortSelect
+          options={[
+            { value: "createdAt", label: "Created date" },
+            { value: "name", label: "Name" },
+          ]}
+          value={sortKey}
+          dir={sortDir}
+          onValueChange={setSortKey}
+          onDirChange={setSortDir}
+        />
+      </div>
+
       {providers.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
@@ -128,9 +169,15 @@ export default function ProvidersPage() {
             </p>
           </CardContent>
         </Card>
+      ) : filteredProviders.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+            <p className="text-sm">No providers match your current search.</p>
+          </CardContent>
+        </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {providers.map((p) => (
+          {filteredProviders.map((p) => (
             <Card
               key={p.id}
               className="cursor-pointer hover:shadow-md transition-shadow"

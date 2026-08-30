@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/table";
 import { Pencil, Trash2, Eye, Braces, Power } from "lucide-react";
 import { EditModelDialog } from "./edit-model-dialog";
+import { DeleteModelDialog } from "./delete-model-dialog";
 
 export interface ModelRow {
   id: string;
@@ -25,6 +26,7 @@ export interface ModelRow {
   /** When false, the gateway strips `tools` before calling this model (fixes
    *  models that return empty completions for tool arrays). */
   reliableToolCalling?: boolean;
+  createdAt: string;
   provider: { id: string; name: string; baseUrl: string; apiFormat: string };
 }
 
@@ -39,6 +41,7 @@ interface Props {
 export function ModelTable({ models, onChanged }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState<ModelRow | null>(null);
+  const [deleting, setDeleting] = useState<ModelRow | null>(null);
 
   const handleToggle = async (m: ModelRow) => {
     setBusy(m.id);
@@ -54,19 +57,9 @@ export function ModelTable({ models, onChanged }: Props) {
     }
   };
 
-  const handleDelete = async (m: ModelRow) => {
-    if (!confirm(`Delete model ${m.modelId}?`)) return;
-    setBusy(m.id);
-    try {
-      const res = await fetch(`/api/admin/models/${m.id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        alert(data.error || "Delete failed");
-      }
-      onChanged();
-    } finally {
-      setBusy(null);
-    }
+  const handleDeleted = () => {
+    setDeleting(null);
+    onChanged();
   };
 
   if (models.length === 0) {
@@ -122,7 +115,7 @@ export function ModelTable({ models, onChanged }: Props) {
               <Button variant="ghost" size="icon" onClick={() => setEditing(m)} disabled={busy === m.id}>
                 <Pencil className="h-4 w-4" />
               </Button>
-              <Button variant="ghost" size="icon" onClick={() => handleDelete(m)} disabled={busy === m.id}>
+              <Button variant="ghost" size="icon" onClick={() => setDeleting(m)} disabled={busy === m.id}>
                 <Trash2 className="h-4 w-4 text-destructive" />
               </Button>
             </TableCell>
@@ -134,6 +127,11 @@ export function ModelTable({ models, onChanged }: Props) {
         model={editing}
         onOpenChange={(open) => !open && setEditing(null)}
         onSaved={onChanged}
+      />
+      <DeleteModelDialog
+        model={deleting}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        onDeleted={handleDeleted}
       />
     </>
   );
