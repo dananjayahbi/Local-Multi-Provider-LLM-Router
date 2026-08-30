@@ -42,7 +42,7 @@ export function MeshZoomControl({
         <Minus className="h-3.5 w-3.5" />
       </button>
       <span className="w-10 text-center text-xs tabular-nums text-muted-foreground">
-        {autoFit ? "fit" : `${Math.round(zoom * 100)}%`}
+        {autoFit ? `${Math.round(zoom * 100)}%` : `${Math.round(zoom * 100)}%`}
       </span>
       <button
         type="button"

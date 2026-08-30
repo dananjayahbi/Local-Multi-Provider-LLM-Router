@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FlowMapSvg } from "./flow-map-svg";
 import { useFlowMeshData } from "./use-flow-mesh-data";
 import { useCatalog } from "./use-catalog";
 import { MeshKeyPicker } from "./mesh-key-picker";
 import { MeshZoomControl } from "./mesh-zoom-control";
+import { MESH_WIDTH } from "./flow-map-layout";
 
 // ─── Persistence ────────────────────────────────────────
 // Which keys appear in the mesh is persisted so reloads keep the selection.
@@ -84,6 +85,35 @@ export function FlowMeshCanvas({ storageKey = MESH_STORAGE_KEY, hidePicker = fal
     [catalog]
   );
 
+  // Measure the rendered container so auto-fit can "fill width" instead of the
+  // default SVG `meet` (which letterboxes the whole mesh and leaves a big empty
+  // band on the right when the provider column is very tall). By fitting to the
+  // mesh's FIXED width (MESH_WIDTH), a tall provider column overflows and the
+  // user can pan it into view — "auto adjust for space" + "pan providers".
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const measure = () => setContainerSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // When autoFit is on we scale so the FULL mesh width fits the container,
+  // rather than fitting the whole (possibly very tall) layout. This means a
+  // provider column taller than the viewport overflows and the user can pan it
+  // into view — "auto adjust for space" + "pan providers". When off we use the
+  // user's manual zoom. Panning is always enabled (bounded inside FlowMapSvg).
+  const fitZoom = useMemo(() => {
+    if (containerSize.w === 0) return 1;
+    return Math.max(MIN_ZOOM, containerSize.w / MESH_WIDTH);
+  }, [containerSize.w]);
+
+  const effectiveZoom = autoFit ? fitZoom : zoom;
+
   return (
     <div className="flex flex-col gap-3">
       {!hidePicker && (
@@ -108,6 +138,8 @@ export function FlowMeshCanvas({ storageKey = MESH_STORAGE_KEY, hidePicker = fal
       )}
 
       <div
+        ref={canvasRef}
+        data-flow-canvas
         className={`relative overflow-hidden rounded-lg border bg-background/40 w-full ${
           heightClass ?? "h-[70vh]"
         } ${className ?? ""}`}
@@ -115,9 +147,9 @@ export function FlowMeshCanvas({ storageKey = MESH_STORAGE_KEY, hidePicker = fal
         <FlowMapSvg
           keys={meshKeys}
           active={active}
-          zoom={autoFit ? 1 : zoom}
-          panX={autoFit ? 0 : pan.x}
-          panY={autoFit ? 0 : pan.y}
+          zoom={effectiveZoom}
+          panX={pan.x}
+          panY={pan.y}
           onPanChange={(x, y) => setPan({ x, y })}
         />
 
@@ -134,12 +166,12 @@ export function FlowMeshCanvas({ storageKey = MESH_STORAGE_KEY, hidePicker = fal
         <div className="absolute right-3 top-3">
           <MeshZoomControl
             autoFit={autoFit}
-            zoom={zoom}
+            zoom={autoFit ? fitZoom : zoom}
             minZoom={MIN_ZOOM}
             maxZoom={MAX_ZOOM}
             onAutoFitToggle={(v) => {
               setAutoFit(v);
-              if (v) setPan({ x: 0, y: 0 });
+              setPan({ x: 0, y: 0 });
             }}
             onZoomChange={(z) => {
               setZoom(z);

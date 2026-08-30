@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useCallback } from "react";
+import { useMemo, useRef, useCallback, useState, useEffect } from "react";
 import type { ActiveRequest } from "./use-live-flow";
 import { computeFlowMapLayout, FlowMapKeyInput, FlowMapLayout, FlowMapKeyBox } from "./flow-map-layout";
 import { useAnimationClock } from "./use-animation-clock";
@@ -40,18 +40,68 @@ export function FlowMapSvg({ keys, active, className, zoom, panX = 0, panY = 0, 
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
 
+  // Measure the PARENT container (the overflow-hidden div) in px. The SVG is
+  // sized to that width and to the mesh's height at width-fill scale, so a tall
+  // provider column overflows the fixed-height container and becomes pannable.
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const host = svgRef.current?.parentElement as HTMLElement | null;
+    if (!host) return;
+    const measure = () =>
+      setContainerSize({ w: host.clientWidth, h: host.clientHeight });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  // Rendered content size (px) at the current zoom. `zoom` is a scale factor
+  // relative to the mesh's logical width (auto-fit passes containerWidth /
+  // MESH_WIDTH so the whole width spans the container). preserveAspectRatio=
+  // "none" stretches viewBox onto this element, but since width & height derive
+  // from the same scale the stretch is uniform (no distortion).
+  const contentW = mesh.width * zoom;
+  const contentH = mesh.height * zoom;
+
+  // Pan clamp (px): the content may move so its far edge never pulls inside the
+  // near edge of the container, i.e. you can bring the tail of the provider
+  // column into view but never fling the whole mesh off screen.
+  const panBounds = useMemo(() => {
+    if (containerSize.w === 0 || containerSize.h === 0) {
+      return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+    }
+    return {
+      minX: Math.min(0, containerSize.w - contentW),
+      maxX: 0,
+      minY: Math.min(0, containerSize.h - contentH),
+      maxY: 0,
+    };
+  }, [containerSize, contentW, contentH]);
+
+  const clampPan = useCallback(
+    (x: number, y: number) => ({
+      x: Math.max(panBounds.minX, Math.min(panBounds.maxX, x)),
+      y: Math.max(panBounds.minY, Math.min(panBounds.maxY, y)),
+    }),
+    [panBounds]
+  );
+
   // ── Pan (drag) handlers ──
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     dragRef.current = { x: e.clientX, y: e.clientY, panX, panY };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
   }, [panX, panY]);
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
-    if (!dragRef.current || !onPanChange) return;
-    const dx = e.clientX - dragRef.current.x;
-    const dy = e.clientY - dragRef.current.y;
-    onPanChange(dragRef.current.panX + dx, dragRef.current.panY + dy);
-  }, [onPanChange]);
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragRef.current || !onPanChange) return;
+      const dx = e.clientX - dragRef.current.x;
+      const dy = e.clientY - dragRef.current.y;
+      const next = clampPan(dragRef.current.panX + dx, dragRef.current.panY + dy);
+      onPanChange(next.x, next.y);
+    },
+    [onPanChange, clampPan]
+  );
 
   const onPointerUp = useCallback(() => {
     dragRef.current = null;
@@ -93,17 +143,25 @@ export function FlowMapSvg({ keys, active, className, zoom, panX = 0, panY = 0, 
     <svg
       ref={svgRef}
       viewBox={`0 0 ${mesh.width} ${mesh.height}`}
-      preserveAspectRatio="xMidYMid meet"
-      className={className ?? "h-full w-full"}
+      preserveAspectRatio="none"
+      className={className ?? "block"}
+      width={contentW}
+      height={contentH}
       role="img"
       aria-label="Live request flow between client, gateway and providers"
-      style={{ cursor: dragRef.current ? "grabbing" : "grab" }}
+      style={{
+        cursor: dragRef.current ? "grabbing" : "grab",
+        maxWidth: "none",
+        transform: `translate(${panX}px, ${panY}px)`,
+        touchAction: "none",
+      }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerLeave={onPointerUp}
     >
-      <g transform={`translate(${panX} ${panY}) scale(${zoom})`}>
+      {/* Content is drawn in logical mesh units; the pixel transform does the pan. */}
+      <g>
         {/* Client → Gateway edge */}
         <line x1={mesh.client.outX} y1={mesh.client.outY} x2={mesh.gateway.inX} y2={mesh.gateway.inY} stroke="#65a30d" strokeWidth={2} strokeOpacity={0.8} strokeDasharray="3 4" />
 

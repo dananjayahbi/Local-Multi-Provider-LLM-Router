@@ -88,19 +88,57 @@ function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
-const W = 1400;
-const H = 900;
+export const MESH_WIDTH = 1400;
+const W = MESH_WIDTH;
 const CLIENT_W = 190;
 const GATEWAY_W = 280;
 const PROVIDER_X = 1010;
 const PROVIDER_W = 360;
 
+// Provider geometry — each provider box sizes itself to its actual key count so
+// nothing overflows. Keys render at a fixed pitch; the parent box and the whole
+// canvas grow to accommodate them ("auto adjust for space").
+const PROVIDER_PAD_TOP = 18;
+const PROVIDER_PAD_BOTTOM = 18;
+const LABEL_H = 40;
+const KEY_H = 48;
+const KEY_GAP = 10;
+const KEY_W = PROVIDER_W - 20;
+const PROVIDER_GAP = 24;
+const TOP_PAD = 60;
+const BOTTOM_PAD = 60;
+
 /**
  * Build the 3-container layout. Providers are stacked on the right column, each
- * containing its key chips. One edge per key runs from the gateway's right edge
- * to the key's left edge so a request dot visibly routes to the exact key.
+ * sized to fit ALL of its key chips (plus padding), so a provider with many keys
+ * gets a taller box and the canvas grows to fit. One edge per key runs from the
+ * gateway's right edge to the key's left edge so a request dot visibly routes to
+ * the exact key.
  */
 export function computeFlowMapLayout(keys: FlowMapKeyInput[]): FlowMapLayout {
+  // Group keys by provider.
+  const byProvider = new Map<string, FlowMapKeyInput[]>();
+  for (const k of keys) {
+    const list = byProvider.get(k.providerName) ?? [];
+    list.push(k);
+    byProvider.set(k.providerName, list);
+  }
+  const providerNames = Array.from(byProvider.keys());
+
+  // Stack provider boxes vertically. Each provider's height = header + its key
+  // chips + padding (never clipped). The canvas height is the sum of all boxes
+  // plus gaps and top/bottom padding — i.e. the layout grows to fit content.
+  const providerHeights = providerNames.map((pname) => {
+    const pKeys = byProvider.get(pname)!;
+    const keysHeight = pKeys.length * KEY_H + Math.max(0, pKeys.length - 1) * KEY_GAP;
+    return PROVIDER_PAD_TOP + LABEL_H + keysHeight + PROVIDER_PAD_BOTTOM;
+  });
+  const totalProviderGap = PROVIDER_GAP * Math.max(0, providerNames.length - 1);
+  const H =
+    keys.length === 0
+      ? Math.max(360, TOP_PAD + BOTTOM_PAD + 240)
+      : TOP_PAD + BOTTOM_PAD + providerHeights.reduce((a, b) => a + b, 0) + totalProviderGap;
+
   const cy = H / 2;
 
   const client = { x: 28, y: cy - 60, w: CLIENT_W, h: 120, label: "Copilot / Client", outX: 28 + CLIENT_W, outY: cy };
@@ -115,45 +153,21 @@ export function computeFlowMapLayout(keys: FlowMapKeyInput[]): FlowMapLayout {
     label: "Queue", cx: gateway.x + gateway.w / 2, cy,
   };
 
-  // Group keys by provider.
-  const byProvider = new Map<string, FlowMapKeyInput[]>();
-  for (const k of keys) {
-    const list = byProvider.get(k.providerName) ?? [];
-    list.push(k);
-    byProvider.set(k.providerName, list);
-  }
-  const providerNames = Array.from(byProvider.keys());
-
   const providers: FlowMapProviderBox[] = [];
   const edges: FlowMapEdge[] = [];
 
-  // Stack provider boxes vertically in the available height.
-  const topPad = 60;
-  const bottomPad = 60;
-  const available = H - topPad - bottomPad;
-  const providerGap = 24;
-  const totalGap = providerGap * Math.max(0, providerNames.length - 1);
-  const usable = available - totalGap;
+  let cursorY = TOP_PAD;
 
-  // Give each provider space proportional to its key count (min 150).
-  const minHeight = 150;
-  const totalKeyCount = Math.max(1, keys.length);
-  let cursorY = topPad;
-
-  providerNames.forEach((pname) => {
+  providerNames.forEach((pname, idx) => {
     const pKeys = byProvider.get(pname)!;
     const color = providerColor(pname);
-    // Provider height scales with its key count, minimum 150.
-    const h = Math.max(minHeight, (pKeys.length / totalKeyCount) * usable);
+    const h = providerHeights[idx];
     const box = { id: `prov-${pname}`, name: pname, color, x: PROVIDER_X, y: cursorY, w: PROVIDER_W, h, keys: [] as FlowMapKeyBox[] };
 
-    const labelH = 40;
-    const keyGap = 10;
-    const keyH = 48;
-    const keysWidth = PROVIDER_W - 20;
-    const startY = cursorY + labelH;
-    pKeys.forEach((k, idx) => {
-      const ky = startY + idx * (keyH + keyGap);
+    // Provider label is vertically centered in the header band.
+    const startY = cursorY + PROVIDER_PAD_TOP + LABEL_H;
+    pKeys.forEach((k, i) => {
+      const ky = startY + i * (KEY_H + KEY_GAP);
       const saturation =
         k.rpmLimit && k.rpmLimit > 0 ? clamp01(k.rpm / k.rpmLimit) : clamp01(k.rpm / 60);
       box.keys.push({
@@ -163,14 +177,14 @@ export function computeFlowMapLayout(keys: FlowMapKeyInput[]): FlowMapLayout {
         color,
         x: PROVIDER_X + 10,
         y: ky,
-        w: keysWidth,
-        h: keyH,
+        w: KEY_W,
+        h: KEY_H,
         rpm: k.rpm,
         rpmLimit: k.rpmLimit,
         saturation,
         inFlight: k.inFlight,
         inX: PROVIDER_X + 10,
-        inY: ky + keyH / 2,
+        inY: ky + KEY_H / 2,
       });
       edges.push({
         id: `edge-${k.id}`,
@@ -180,13 +194,13 @@ export function computeFlowMapLayout(keys: FlowMapKeyInput[]): FlowMapLayout {
         x1: gateway.outX,
         y1: gateway.outY,
         x2: PROVIDER_X + 10,
-        y2: ky + keyH / 2,
+        y2: ky + KEY_H / 2,
         active: k.inFlight > 0 || k.queued > 0,
       });
     });
 
     providers.push(box);
-    cursorY += h + providerGap;
+    cursorY += h + PROVIDER_GAP;
   });
 
   return { width: W, height: H, client, gateway, queue, providers, edges };
