@@ -30,7 +30,11 @@ import {
   ApiKeyRateLimitReservation,
 } from "./rate-limit/api-key-rate-limiter";
 import { recordFlowEvent } from "./rate-limit/flow-tracker";
-import { estimateTokensForRateLimit } from "./rate-limit/token-estimator";
+import {
+  estimatePromptTokens,
+  estimateCompletionBudget,
+  estimateTokensForRateLimit,
+} from "./rate-limit/token-estimator";
 import { normalizeCanonicalResponse } from "./response-normalizer";
 import {
   orderCandidates,
@@ -368,9 +372,13 @@ export async function orchestrate(
   //   KEY_AWARE (default)    — caching-aware selector using conversation
   //                            affinity + live rate-limiter usage (selector.ts).
   const conv = getConversationState(resolvedPool.id, sessionId);
+  // `promptTokens` is the INPUT size only; `completionBudget` is the OUTPUT
+  // reserve. Never use `estimateTokensForRateLimit` (which already adds a
+  // completion budget) as `promptTokens` here or the request is double-counted
+  // and every healthy key looks like it overflows (phantom "pool exhausted").
   const spec = {
-    promptTokens: estimateTokensForRateLimit(canonicalRequest),
-    completionBudget: canonicalRequest.max_tokens ?? 1024,
+    promptTokens: estimatePromptTokens(canonicalRequest),
+    completionBudget: estimateCompletionBudget(canonicalRequest),
   };
 
   // ── Multi-session locking: filter candidates ─────────
@@ -450,41 +458,52 @@ export async function orchestrate(
   }
 
   if (orderedCandidates.length === 0) {
-    // Every otherwise-healthy key was excluded by the routing selector
-    // (limits/context fit) OR is locked by a concurrent session. Treat as
-    // exhausted so the caller returns a pre-defined completion instead of a
-    // hard error — but for a lock-only exclusion we'd rather wait, so the
-    // recovery block below re-checks with fresh key state.
-    await createRequestLog({
-      poolId: logPoolId,
-      apiKeyId: null,
-      providerModelId: null,
-      tier: null,
-      outcome: "FAILURE",
-      errorClassification: NO_HEALTHY_KEY_CLASSIFICATION,
-      httpStatus: 0,
-      latencyMs: 0,
-      requestedVirtualModel: canonicalRequest.model,
-      providerErrorMessage: null,
-      providerErrorCode: null,
-      gatewayErrorMessage: EXHAUSTED_POOL_MESSAGE,
-    });
+    // Every candidate was excluded by the routing selector (limits/context fit)
+    // or a concurrent session lock. That must NOT be treated as "pool exhausted":
+    // healthy ACTIVE keys may simply be over-conservatively filtered (e.g. the
+    // estimated request size is a guess, and a daily RPD/TPD limit resets within
+    // hours). The PRODUCTION behaviour differs from the playground simulator, so
+    // if at least one healthy ACTIVE key exists we fall back to routing to it
+    // rather than declaring the pool drained — a real upstream call will tell us
+    // the true limit. Only report exhausted when there is genuinely no healthy key.
+    const haveHealthy = allCandidates.length > 0;
+    if (!haveHealthy) {
+      await createRequestLog({
+        poolId: logPoolId,
+        apiKeyId: null,
+        providerModelId: null,
+        tier: null,
+        outcome: "FAILURE",
+        errorClassification: NO_HEALTHY_KEY_CLASSIFICATION,
+        httpStatus: 0,
+        latencyMs: 0,
+        requestedVirtualModel: canonicalRequest.model,
+        providerErrorMessage: null,
+        providerErrorCode: null,
+        gatewayErrorMessage: EXHAUSTED_POOL_MESSAGE,
+      });
 
-    return {
-      success: false,
-      exhaustedPool: true,
-      errors: [
-        {
-          apiKeyId: "",
-          apiKeyLabel: "",
-          providerName: "",
-          modelName: "",
-          classification: NO_HEALTHY_KEY_CLASSIFICATION,
-          httpStatus: 0,
-          message: EXHAUSTED_POOL_MESSAGE,
-        },
-      ],
-    };
+      return {
+        success: false,
+        exhaustedPool: true,
+        errors: [
+          {
+            apiKeyId: "",
+            apiKeyLabel: "",
+            providerName: "",
+            modelName: "",
+            classification: NO_HEALTHY_KEY_CLASSIFICATION,
+            httpStatus: 0,
+            message: EXHAUSTED_POOL_MESSAGE,
+          },
+        ],
+      };
+    }
+
+    // Healthy ACTIVE keys exist but were excluded by the selector/locks. Fall
+    // back to the full candidate set so we still try them (the rate-limiter
+    // already handles per-key RPM/TPM waiting; a real call decides the truth).
+    orderedCandidates = allCandidates;
   }
 
   const prevKeyId = conv.currentKeyId;
