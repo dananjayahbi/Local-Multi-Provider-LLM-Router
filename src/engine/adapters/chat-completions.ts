@@ -5,9 +5,13 @@ import {
   CanonicalDelta,
   CanonicalMessage,
   CanonicalTool,
+  CanonicalMessageData,
+  TextContent,
   contentToParts,
+  normalizeProviderErrorCode,
 } from "../canonical";
 import { normalizeCanonicalResponse } from "../response-normalizer";
+import { normalizeReasoningDelta, isBareDelta } from "./stream-helpers";
 
 function generateId(): string {
   return "chatcmpl-" + crypto.randomUUID();
@@ -24,10 +28,25 @@ export const chatCompletionsAdapter: ProviderAdapter = {
     for (const msg of canonical.messages) {
       const entry: Record<string, unknown> = {
         role: msg.role,
-        content: msg.content,
+        content:
+          typeof msg.content === "string"
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content
+                  .filter((c): c is TextContent => c.type === "text")
+                  .map((c) => c.text)
+                  .join("")
+              : msg.content,
       };
       if (msg.name) entry.name = msg.name;
       if (msg.tool_call_id) entry.tool_call_id = msg.tool_call_id;
+      // CRITICAL: forward the assistant's tool_calls so the upstream model can
+      // pair them with the following `tool`-role results. Without this, a tool
+      // result has no anchor and the model keeps re-issuing the same tool
+      // (Copilot's repeated "Added todo" / "Updated todo list" loop).
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        entry.tool_calls = msg.tool_calls;
+      }
       messages.push(entry);
     }
 
@@ -57,15 +76,23 @@ export const chatCompletionsAdapter: ProviderAdapter = {
 
   parseResponse(responseBody: string, _statusCode: number): CanonicalResponse {
     const raw = JSON.parse(responseBody);
-    const choices = (raw.choices || []).map((c: Record<string, unknown>, i: number) => ({
-      index: c.index ?? i,
-      message: {
-        role: "assistant" as const,
-        content: (c.message as Record<string, unknown>)?.content ?? null,
-        tool_calls: (c.message as Record<string, unknown>)?.tool_calls ?? undefined,
-      },
-      finish_reason: (c.finish_reason as CanonicalResponse["choices"][0]["finish_reason"]) ?? null,
-    }));
+    const choices = (raw.choices || []).map((c: Record<string, unknown>, i: number) => {
+      const msg = (c.message as Record<string, unknown>) || {};
+      const reasoning = (msg.reasoning as string) || undefined;
+      const reasoning_content = (msg.reasoning_content as string) || undefined;
+      return {
+        index: c.index ?? i,
+        message: {
+          role: "assistant" as const,
+          content: (msg.content as string | null) ?? null,
+          tool_calls: (msg.tool_calls as CanonicalMessageData["tool_calls"]) ?? undefined,
+          // Pass reasoning through so Copilot renders the collapsible Thinking UI.
+          ...(reasoning ? { reasoning } : {}),
+          ...(reasoning_content ? { reasoning_content } : {}),
+        },
+        finish_reason: (c.finish_reason as CanonicalResponse["choices"][0]["finish_reason"]) ?? null,
+      };
+    });
 
     return normalizeCanonicalResponse({
       id: raw.id || generateId(),
@@ -97,14 +124,31 @@ export const chatCompletionsAdapter: ProviderAdapter = {
           delta: (c.delta || {}) as CanonicalDelta["choices"][0]["delta"],
           finish_reason: c.finish_reason ?? undefined,
         }));
-        // Providers sometimes emit empty choices[] between tool-call handoffs
-        if (choices.length === 0) continue;
-        return {
+        const usage = raw.usage as CanonicalDelta["usage"];
+        // A final usage-only terminal chunk (OpenAI/OpenRouter/DeepSeek emit
+        // `choices: []` with a populated `usage` at stream end). Dropping it
+        // would discard the ONLY source of streamed prompt/completion counts —
+        // the root cause of pools showing zero tokens. Return it so the
+        // orchestrator can capture usage even though there are no choices.
+        if (choices.length === 0) {
+          if (usage) return { id: raw.id, model: raw.model, choices: [], usage };
+          continue;
+        }
+        let canon: CanonicalDelta = {
           id: raw.id,
           model: raw.model,
           choices: choices as CanonicalDelta["choices"],
-          usage: raw.usage,
+          usage,
         };
+        // Pass reasoning through so GitHub Copilot renders the collapsible
+        // Thinking UI. Normalize OpenRouter's reasoning_details (array) into
+        // the string (`reasoning`) field Copilot actually reads.
+        canon = normalizeReasoningDelta(canon);
+        // Drop deltas that carry nothing usable (no content, no reasoning, no
+        // tool calls, no finish_reason) — pure heartbeats confuse clients.
+        const hasTerminal = canon.choices.some((c) => c.finish_reason != null);
+        if (isBareDelta(canon) && !hasTerminal) continue;
+        return canon;
       } catch {
         return null;
       }
@@ -118,7 +162,7 @@ export const chatCompletionsAdapter: ProviderAdapter = {
       return {
         httpStatus: statusCode,
         providerErrorMessage: raw.error?.message || raw.message || `HTTP ${statusCode}`,
-        providerErrorCode: raw.error?.code || raw.error?.type || null,
+        providerErrorCode: normalizeProviderErrorCode(raw.error?.code || raw.error?.type),
       };
     } catch {
       return {

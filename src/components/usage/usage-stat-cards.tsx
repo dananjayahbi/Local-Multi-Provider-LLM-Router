@@ -19,11 +19,11 @@ export function UsageStatCards({ stats }: UsageStatCardsProps) {
   if (!stats) return null;
 
   const cards = [
-    { title: "Total Tokens", value: stats.totalTokens, icon: Coins, color: "text-violet-500" },
-    { title: "Prompt Tokens", value: stats.promptTokens, icon: ArrowUpRight, color: "text-blue-500" },
-    { title: "Completion Tokens", value: stats.completionTokens, icon: ArrowDownRight, color: "text-emerald-500" },
-    { title: "Total Requests", value: stats.requestCount, icon: Hash, color: "text-amber-500" },
-    { title: "Successful", value: stats.successCount, icon: CheckCircle2, color: "text-green-500" },
+    { title: "Total Tokens", value: stats.totalTokens, icon: Coins, color: "text-lime-600" },
+    { title: "Prompt Tokens", value: stats.promptTokens, icon: ArrowUpRight, color: "text-green-600" },
+    { title: "Completion Tokens", value: stats.completionTokens, icon: ArrowDownRight, color: "text-emerald-600" },
+    { title: "Total Requests", value: stats.requestCount, icon: Hash, color: "text-gray-500" },
+    { title: "Successful", value: stats.successCount, icon: CheckCircle2, color: "text-green-600" },
     { title: "Failed", value: stats.failureCount, icon: XCircle, color: "text-red-500" },
   ];
 

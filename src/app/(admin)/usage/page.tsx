@@ -7,6 +7,8 @@ import { DateRangeSelector, DateRangePreset } from "@/components/usage/date-rang
 import { UsageFilterBar } from "@/components/usage/usage-filter-bar";
 import { UsageStatCards } from "@/components/usage/usage-stat-cards";
 import { RateLimitCharts } from "@/components/usage/rate-limit-charts";
+import { ChartKeySelector } from "@/components/usage/chart-key-selector";
+import { LiveDataFlow } from "@/components/usage/live-data-flow";
 
 interface UsageStats {
   promptTokens: number;
@@ -40,8 +42,10 @@ export default function UsagePage() {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Chart mode: track which pool or key is selected for live rate charts
-  const [chartMode, setChartMode] = useState<{ type: "pool" | "key"; poolId?: string; apiKeyId?: string }>({
+  // Chart mode: track which pool or keys are selected for live rate charts.
+  // `keyIds` is the user-selected set (defaults to top-2 most-used) — it wins
+  // over pool/key modes so the chart shows exactly what the user picked.
+  const [chartMode, setChartMode] = useState<{ type: "pool" | "key"; poolId?: string; apiKeyId?: string; keyIds?: string[] }>({
     type: "pool",
   });
 
@@ -134,11 +138,14 @@ export default function UsagePage() {
         />
         <UsageFilterBar onFiltersChange={(f) => {
           setFilters(f);
-          // Sync chart mode
+          // Sync chart mode — only when the user explicitly picks a pool/key in
+          // the top filter bar. Keep any manually-selected keyIds intact.
           if (f.apiKeyId) {
-            setChartMode({ type: "key", apiKeyId: f.apiKeyId });
+            setChartMode({ ...chartMode, type: "key", apiKeyId: f.apiKeyId, keyIds: undefined });
+          } else if (f.poolId) {
+            setChartMode({ ...chartMode, type: "pool", poolId: f.poolId, keyIds: undefined });
           } else {
-            setChartMode({ type: "pool", poolId: f.poolId });
+            setChartMode({ ...chartMode, poolId: undefined, apiKeyId: undefined });
           }
         }} />
       </div>
@@ -155,14 +162,31 @@ export default function UsagePage() {
         <UsageStatCards stats={stats} />
       )}
 
+      {/* ─── Live Data Flow Illustration ─── */}
+      <LiveDataFlow />
+
       {/* ─── Live Rate Limit Charts ─── */}
       <div className="border-t pt-6">
-        <div className="flex items-center gap-2 mb-4">
+        <div className="flex items-center gap-2 mb-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
           <h2 className="text-lg font-semibold">Live Rate Limiting</h2>
           <span className="text-xs text-muted-foreground">
-            {chartMode.type === "key" ? "Single key" : chartMode.poolId ? "Pool keys" : "All active keys"}
+            {chartMode.keyIds?.length
+              ? `${chartMode.keyIds.length} selected key(s)`
+              : chartMode.type === "key"
+              ? "Single key"
+              : chartMode.poolId
+              ? "Pool keys"
+              : "All active keys"}
           </span>
+        </div>
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <ChartKeySelector
+              selected={chartMode.keyIds ?? []}
+              onSelectionChange={(ids) => setChartMode({ ...chartMode, keyIds: ids })}
+            />
+          </div>
         </div>
         <RateLimitCharts mode={chartMode} />
       </div>

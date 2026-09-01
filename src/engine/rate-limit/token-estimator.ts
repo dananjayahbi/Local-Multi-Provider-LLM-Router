@@ -42,14 +42,30 @@ function estimateMessageChars(request: CanonicalRequest): number {
   return totalChars;
 }
 
-export function estimateTokensForRateLimit(request: CanonicalRequest): number {
+/**
+ * Estimate the PROMPT (input) tokens for a request. This is the input side
+ * only — it does NOT include any completion budget so callers can separately
+ * account for the output reserve (used for context-fit scoring).
+ */
+export function estimatePromptTokens(request: CanonicalRequest): number {
   const promptCharCount = estimateMessageChars(request);
-  const promptTokens = Math.max(1, Math.ceil(promptCharCount / CHARS_PER_TOKEN_APPROX));
+  return Math.max(1, Math.ceil(promptCharCount / CHARS_PER_TOKEN_APPROX));
+}
 
-  const completionBudget =
-    request.max_tokens && request.max_tokens > 0
-      ? request.max_tokens
-      : Math.max(MIN_COMPLETION_BUDGET, Math.min(MAX_COMPLETION_BUDGET, promptTokens));
+/**
+ * Estimate the COMPLETION (output) budget to reserve for a request. Defaults
+ * to the requested `max_tokens`, or a sensible cap based on the prompt size.
+ * Kept separate from `estimatePromptTokens` so the two are never double-counted.
+ */
+export function estimateCompletionBudget(request: CanonicalRequest): number {
+  const promptTokens = estimatePromptTokens(request);
+  return request.max_tokens && request.max_tokens > 0
+    ? request.max_tokens
+    : Math.max(MIN_COMPLETION_BUDGET, Math.min(MAX_COMPLETION_BUDGET, promptTokens));
+}
 
+export function estimateTokensForRateLimit(request: CanonicalRequest): number {
+  const promptTokens = estimatePromptTokens(request);
+  const completionBudget = estimateCompletionBudget(request);
   return promptTokens + completionBudget;
 }

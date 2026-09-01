@@ -1,4 +1,5 @@
 const WINDOW_MS = 60_000;
+const DAY_WINDOW_MS = 24 * 3600_000;
 
 interface TokenRecord {
   reservationId: string;
@@ -7,8 +8,10 @@ interface TokenRecord {
 }
 
 interface KeyWindowState {
-  requestTimestamps: number[];
-  tokenRecords: TokenRecord[];
+  requestTimestamps: number[]; // RPM (60s)
+  tokenRecords: TokenRecord[]; // TPM (60s)
+  dailyRequestTs: number[]; // RPD (24h)
+  dailyTokenRecords: TokenRecord[]; // TPD (24h)
   tail: Promise<void>;
 }
 
@@ -17,6 +20,7 @@ export interface ApiKeyRateLimitReservation {
   reservationId: string;
   reservedTokens: number;
   hasTpmLimit: boolean;
+  requestTs: number; // epoch ms used for daily RPD accounting
 }
 
 interface WaitForApiKeyRateLimitInput {
@@ -35,6 +39,8 @@ function getKeyState(apiKeyId: string): KeyWindowState {
   const initial: KeyWindowState = {
     requestTimestamps: [],
     tokenRecords: [],
+    dailyRequestTs: [],
+    dailyTokenRecords: [],
     tail: Promise.resolve(),
   };
 
@@ -43,13 +49,14 @@ function getKeyState(apiKeyId: string): KeyWindowState {
 }
 
 function pruneExpired(state: KeyWindowState, now: number): void {
-  while (state.requestTimestamps.length > 0 && now - state.requestTimestamps[0] >= WINDOW_MS) {
-    state.requestTimestamps.shift();
-  }
-
-  while (state.tokenRecords.length > 0 && now - state.tokenRecords[0].timestamp >= WINDOW_MS) {
-    state.tokenRecords.shift();
-  }
+  // Order-independent pruning: drop entries older than their window regardless
+  // of insertion order. Seeded entries from durable history may not be strictly
+  // ascending in rare cases, so relying on front-shift would leave stale entries
+  // at the end and inflate the counters (causing over-throttling).
+  state.requestTimestamps = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
+  state.tokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
+  state.dailyRequestTs = state.dailyRequestTs.filter((ts) => now - ts < DAY_WINDOW_MS);
+  state.dailyTokenRecords = state.dailyTokenRecords.filter((r) => now - r.timestamp < DAY_WINDOW_MS);
 }
 
 function getRpmWaitMs(state: KeyWindowState, now: number, rpmLimit: number | null): number {
@@ -105,8 +112,15 @@ async function reserveWithinWindow(
 
     if (waitMs <= 0) {
       const reservationId = crypto.randomUUID();
-      state.requestTimestamps.push(now);
+      const requestTs = now;
+      state.requestTimestamps.push(requestTs);
       state.tokenRecords.push({
+        reservationId,
+        timestamp: now,
+        tokens: normalizedRequestedTokens,
+      });
+      state.dailyRequestTs.push(requestTs);
+      state.dailyTokenRecords.push({
         reservationId,
         timestamp: now,
         tokens: normalizedRequestedTokens,
@@ -117,6 +131,7 @@ async function reserveWithinWindow(
         reservationId,
         reservedTokens: normalizedRequestedTokens,
         hasTpmLimit: Boolean(tpmLimit && tpmLimit > 0),
+        requestTs,
       };
     }
 
@@ -132,11 +147,22 @@ export async function waitForApiKeyRateLimit(
   const hasRateLimits = Boolean((rpmLimit && rpmLimit > 0) || (tpmLimit && tpmLimit > 0));
 
   if (!hasRateLimits) {
+    const reservationId = crypto.randomUUID();
+    const requestTs = Date.now();
+    const state = getKeyState(input.apiKeyId);
+    // Even without rpm/tpm limits, record daily usage for RPD/TPD awareness.
+    state.dailyRequestTs.push(requestTs);
+    state.dailyTokenRecords.push({
+      reservationId,
+      timestamp: requestTs,
+      tokens: Math.max(1, Math.floor(input.requestedTokens)),
+    });
     return {
       apiKeyId: input.apiKeyId,
-      reservationId: "",
+      reservationId,
       reservedTokens: Math.max(1, Math.floor(input.requestedTokens)),
       hasTpmLimit: false,
+      requestTs,
     };
   }
 
@@ -154,7 +180,7 @@ export async function settleApiKeyRateLimit(
   reservation: ApiKeyRateLimitReservation,
   actualTotalTokens?: number | null
 ): Promise<void> {
-  if (!reservation.reservationId || !reservation.hasTpmLimit) {
+  if (!reservation.reservationId) {
     return;
   }
 
@@ -168,18 +194,22 @@ export async function settleApiKeyRateLimit(
     () => {
       const now = Date.now();
       pruneExpired(state, now);
-
-      const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
-      if (!record) return;
-      record.tokens = normalizedActualTokens;
+      if (reservation.hasTpmLimit) {
+        const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+        if (record) record.tokens = normalizedActualTokens;
+      }
+      const daily = state.dailyTokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+      if (daily) daily.tokens = normalizedActualTokens;
     },
     () => {
       const now = Date.now();
       pruneExpired(state, now);
-
-      const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
-      if (!record) return;
-      record.tokens = normalizedActualTokens;
+      if (reservation.hasTpmLimit) {
+        const record = state.tokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+        if (record) record.tokens = normalizedActualTokens;
+      }
+      const daily = state.dailyTokenRecords.find((entry) => entry.reservationId === reservation.reservationId);
+      if (daily) daily.tokens = normalizedActualTokens;
     }
   );
 
@@ -187,14 +217,154 @@ export async function settleApiKeyRateLimit(
   await task;
 }
 
+/**
+ * Release a reservation that did NOT consume provider capacity — called on
+ * failure/abort paths (provider HTTP error, network error, invalid request).
+ *
+ * At reservation time `waitForApiKeyRateLimit` already pushed a request
+ * timestamp + estimated token records (and daily records) into the in-memory
+ * window. On success we keep them and settle to actual usage. On failure the
+ * upstream consumed ~nothing, so leaving them would INFLATE the local RPM/TPM/
+ * RPD/TPD counters and make the gateway throttle unnecessarily — the exact
+ * "over-synced" problem we want to avoid. Releasing restores the capacity so
+ * the penalty/auto-calibration engines (not a stale local counter) decide how
+ * the key is treated.
+ */
+export async function releaseApiKeyRateLimit(
+  reservation: ApiKeyRateLimitReservation
+): Promise<void> {
+  if (!reservation.reservationId) {
+    return;
+  }
+
+  const state = getKeyState(reservation.apiKeyId);
+  const remove = () => {
+    const now = Date.now();
+    pruneExpired(state, now);
+
+    // Remove the single request timestamp captured for this reservation.
+    const rIdx = state.requestTimestamps.indexOf(reservation.requestTs);
+    if (rIdx >= 0) state.requestTimestamps.splice(rIdx, 1);
+
+    const dIdx = state.dailyRequestTs.indexOf(reservation.requestTs);
+    if (dIdx >= 0) state.dailyRequestTs.splice(dIdx, 1);
+
+    // Remove the estimated token records by reservation id.
+    state.tokenRecords = state.tokenRecords.filter(
+      (r) => r.reservationId !== reservation.reservationId
+    );
+    state.dailyTokenRecords = state.dailyTokenRecords.filter(
+      (r) => r.reservationId !== reservation.reservationId
+    );
+  };
+
+  const task = state.tail.then(remove, remove);
+  state.tail = task.then(() => undefined, () => undefined);
+  await task;
+}
+
+// ─── Usage Snapshot for the caching-aware selector ─────
+// Maps in-memory state to the playground `KeyUsage` shape so the
+// (tested) selector can score utilization across all limit types.
+
+import type { KeyUsage } from "@/engine/playground/types";
+
+export function getKeyUsageSnapshot(apiKeyId: string): KeyUsage | null {
+  const state = windowStateByKey.get(apiKeyId);
+  if (!state) return null;
+  const now = Date.now();
+  pruneExpired(state, now);
+  return {
+    rpm: [...state.requestTimestamps],
+    tpm: state.tokenRecords.map((r) => ({ ts: r.timestamp, tokens: r.tokens })),
+    rpd: state.dailyRequestTs.map((ts) => ({ ts })),
+    tpd: state.dailyTokenRecords.map((r) => ({ ts: r.timestamp, tokens: r.tokens })),
+    lastUsedAt: state.requestTimestamps.length ? state.requestTimestamps[state.requestTimestamps.length - 1] : null,
+    totalTokensServed: state.tokenRecords.reduce((s, r) => s + r.tokens, 0),
+    cachedTokensSaved: 0,
+  };
+}
+
+// ─── Durable-window seeding (post-restart hydration) ───
+// After a PC/container restart the in-memory windows are empty. We re-hydrate
+// them from durable SUCCESS request logs so the router immediately remembers
+// recent RPM/TPM/RPD/TPD usage and keeps pre-throttling — otherwise it would
+// burst past a provider's real limit and incur a spurious 429 penalty.
+
+export interface SeedWindowEntry {
+  /** Epoch ms of the request. */
+  timestamp: number;
+  /** Tokens consumed by this request (prompt + completion). */
+  tokens: number;
+}
+
+/**
+ * Inject reconstructed usage into a key's window state. Idempotent: existing
+ * state is preserved (only new entries are appended), and old entries are
+ * pruned by the next `pruneExpired` call. Safe to call on a fresh process.
+ */
+export function seedRateLimitWindows(
+  apiKeyId: string,
+  entries: SeedWindowEntry[]
+): void {
+  if (!entries.length) return;
+  const state = getKeyState(apiKeyId);
+  const now = Date.now();
+
+  for (const entry of entries) {
+    // Skip anything already outside both the minute and daily windows.
+    if (now - entry.timestamp >= DAY_WINDOW_MS) continue;
+    if (!Number.isFinite(entry.timestamp) || entry.timestamp <= 0) continue;
+
+    state.requestTimestamps.push(entry.timestamp);
+    state.tokenRecords.push({
+      reservationId: crypto.randomUUID(),
+      timestamp: entry.timestamp,
+      tokens: Math.max(1, entry.tokens),
+    });
+    state.dailyRequestTs.push(entry.timestamp);
+    state.dailyTokenRecords.push({
+      reservationId: crypto.randomUUID(),
+      timestamp: entry.timestamp,
+      tokens: Math.max(1, entry.tokens),
+    });
+  }
+}
+
 // ─── Live Snapshot (for charts + queue indicator) ──────
 
 export interface KeyRateSnapshot {
   apiKeyId: string;
+  /** Request count in the current 60s window. */
   rpmCurrent: number;
+  /** Estimated token count in the current 60s window. */
   tpmCurrent: number;
+  /** Daily request count (24h rolling). */
+  rpdCurrent: number;
+  /** Daily token count (24h rolling). */
+  tpdCurrent: number;
   isWaiting: boolean;        // any request currently queued for this key
   waitingCount: number;      // approximate # of queued reservations
+}
+
+/** Read the live counters for a key WITHOUT mutating its window arrays. */
+function collectCounters(
+  state: KeyWindowState,
+  now: number
+): Omit<KeyRateSnapshot, "apiKeyId"> {
+  const validRequestTs = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
+  const validTokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
+  const dailyRequestTs = state.dailyRequestTs.filter((ts) => now - ts < DAY_WINDOW_MS);
+  const dailyTokenRecords = state.dailyTokenRecords.filter((r) => now - r.timestamp < DAY_WINDOW_MS);
+
+  return {
+    rpmCurrent: validRequestTs.length,
+    tpmCurrent: validTokenRecords.reduce((s, r) => s + r.tokens, 0),
+    rpdCurrent: dailyRequestTs.length,
+    tpdCurrent: dailyTokenRecords.reduce((s, r) => s + r.tokens, 0),
+    isWaiting: validRequestTs.length > 0 || validTokenRecords.length > 0,
+    waitingCount: validRequestTs.length,
+  };
 }
 
 export function getAllKeyRateSnapshots(): KeyRateSnapshot[] {
@@ -202,18 +372,7 @@ export function getAllKeyRateSnapshots(): KeyRateSnapshot[] {
   const snapshots: KeyRateSnapshot[] = [];
 
   for (const [apiKeyId, state] of windowStateByKey.entries()) {
-    // Count expired without mutating the real arrays (shift is done by prune, so we do a filtered read)
-    const validRequestTs = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
-    const validTokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
-    const tokenSum = validTokenRecords.reduce((s, r) => s + r.tokens, 0);
-
-    snapshots.push({
-      apiKeyId,
-      rpmCurrent: validRequestTs.length,
-      tpmCurrent: tokenSum,
-      isWaiting: validRequestTs.length > 0 || validTokenRecords.length > 0,
-      waitingCount: validRequestTs.length,
-    });
+    snapshots.push({ apiKeyId, ...collectCounters(state, now) });
   }
 
   return snapshots;
@@ -223,16 +382,48 @@ export function getKeyRateSnapshot(apiKeyId: string): KeyRateSnapshot | null {
   const state = windowStateByKey.get(apiKeyId);
   if (!state) return null;
 
-  const now = Date.now();
-  const validRequestTs = state.requestTimestamps.filter((ts) => now - ts < WINDOW_MS);
-  const validTokenRecords = state.tokenRecords.filter((r) => now - r.timestamp < WINDOW_MS);
-  const tokenSum = validTokenRecords.reduce((s, r) => s + r.tokens, 0);
+  return { apiKeyId, ...collectCounters(state, Date.now()) };
+}
 
-  return {
-    apiKeyId,
-    rpmCurrent: validRequestTs.length,
-    tpmCurrent: tokenSum,
-    isWaiting: validRequestTs.length > 0 || validTokenRecords.length > 0,
-    waitingCount: validRequestTs.length,
+// ─── Server-side snapshot history (for refresh-preserving charts) ──
+// The /usage charts poll live status every second. On every poll we append a
+// point to an in-memory ring buffer per key so a browser refresh can SEED the
+// chart from server history instead of starting from an empty line.
+
+export interface RateHistoryPoint {
+  ts: number;
+  rpm: number;
+  tpm: number;
+  rpd: number;
+  tpd: number;
+}
+
+const HISTORY_MAX_POINTS = 300; // ~5 minutes at a 1s poll
+const historyByKey = new Map<string, RateHistoryPoint[]>();
+
+/** Append a freshly-sampled point for a key (called by the status route on poll). */
+export function appendRateHistorySnapshot(apiKeyId: string): RateHistoryPoint {
+  const state = windowStateByKey.get(apiKeyId);
+  const now = Date.now();
+  const counters = state ? collectCounters(state, now) : null;
+
+  const point: RateHistoryPoint = {
+    ts: now,
+    rpm: counters?.rpmCurrent ?? 0,
+    tpm: counters?.tpmCurrent ?? 0,
+    rpd: counters?.rpdCurrent ?? 0,
+    tpd: counters?.tpdCurrent ?? 0,
   };
+
+  const buffer = historyByKey.get(apiKeyId) ?? [];
+  buffer.push(point);
+  if (buffer.length > HISTORY_MAX_POINTS) buffer.splice(0, buffer.length - HISTORY_MAX_POINTS);
+  historyByKey.set(apiKeyId, buffer);
+
+  return point;
+}
+
+/** Return the buffered history for a key (empty if none). */
+export function getRateHistory(apiKeyId: string): RateHistoryPoint[] {
+  return historyByKey.get(apiKeyId) ?? [];
 }

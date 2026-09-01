@@ -1,10 +1,18 @@
 // ─── Rate Limits Status API ────────────────────────────
 // GET /api/admin/rate-limits/status
-// Returns live RPM/TPM snapshots from the in-memory rate limiter.
+// Returns live RPM/TPM/RPD/TPD snapshots from the in-memory rate limiter,
+// with the DB-configured ceilings and a server-side history buffer so the
+// /usage charts survive a refresh.
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAllKeyRateSnapshots, getKeyRateSnapshot } from "@/engine/rate-limit/api-key-rate-limiter";
+import {
+  getAllKeyRateSnapshots,
+  getKeyRateSnapshot,
+  getRateHistory,
+  appendRateHistorySnapshot,
+  RateHistoryPoint,
+} from "@/engine/rate-limit/api-key-rate-limiter";
 
 export interface RateLimitEntry {
   apiKeyId: string;
@@ -14,8 +22,31 @@ export interface RateLimitEntry {
   rpmLimit: number | null;
   tpmCurrent: number;
   tpmLimit: number | null;
+  rpdCurrent: number;
+  rpdLimit: number | null;
+  tpdCurrent: number;
+  tpdLimit: number | null;
   isWaiting: boolean;
   waitingCount: number;
+  history: RateHistoryPoint[];
+}
+
+/** Build the API-key select common to single/pool/all modes. */
+const keySelect = {
+  id: true,
+  label: true,
+  rpmLimit: true,
+  tpmLimit: true,
+  rpdLimit: true,
+  tpdLimit: true,
+  provider: { select: { name: true } },
+} as const;
+
+function enrich(entry: Omit<RateLimitEntry, "history">): RateLimitEntry {
+  // Seed the server-side history buffer from the live snapshot so the chart
+  // never starts empty and survives a page refresh.
+  appendRateHistorySnapshot(entry.apiKeyId);
+  return { ...entry, history: getRateHistory(entry.apiKeyId) };
 }
 
 export async function GET(request: NextRequest) {
@@ -23,13 +54,56 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const poolId = searchParams.get("poolId") || undefined;
     const apiKeyId = searchParams.get("apiKeyId") || undefined;
+    // Comma-separated list of keys the client wants to chart. Takes priority
+    // over single-key / pool modes so the /usage chart can show the user's
+    // selected set (default: the 2 most-used keys).
+    const keyIdsParam = searchParams.get("keyIds") || undefined;
+    const keyIds = keyIdsParam
+      ? keyIdsParam.split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined;
+
+    if (keyIds && keyIds.length > 0) {
+      // Multi-key mode (from client key selection)
+      const keys = await prisma.apiKey.findMany({
+        where: { id: { in: keyIds } },
+        select: keySelect,
+      });
+      const byId = new Map(keys.map((k) => [k.id, k]));
+      const snapshots = getAllKeyRateSnapshots();
+      const snapMap = new Map(snapshots.map((s) => [s.apiKeyId, s]));
+
+      const entries = keyIds.flatMap((id) => {
+        const k = byId.get(id);
+        if (!k) return [];
+        const s = snapMap.get(id);
+        return [
+          enrich({
+            apiKeyId: id,
+            apiKeyLabel: k.label,
+            providerName: k.provider.name,
+            rpmCurrent: s?.rpmCurrent ?? 0,
+            rpmLimit: k.rpmLimit,
+            tpmCurrent: s?.tpmCurrent ?? 0,
+            tpmLimit: k.tpmLimit,
+            rpdCurrent: s?.rpdCurrent ?? 0,
+            rpdLimit: k.rpdLimit,
+            tpdCurrent: s?.tpdCurrent ?? 0,
+            tpdLimit: k.tpdLimit,
+            isWaiting: s?.isWaiting ?? false,
+            waitingCount: s?.waitingCount ?? 0,
+          }),
+        ];
+      });
+
+      return NextResponse.json(entries);
+    }
 
     if (apiKeyId) {
       // Single key mode
       const snapshot = getKeyRateSnapshot(apiKeyId);
       const key = await prisma.apiKey.findUnique({
         where: { id: apiKeyId },
-        select: { label: true, rpmLimit: true, tpmLimit: true, provider: { select: { name: true } } },
+        select: keySelect,
       });
 
       if (!key) {
@@ -37,7 +111,7 @@ export async function GET(request: NextRequest) {
       }
 
       return NextResponse.json([
-        {
+        enrich({
           apiKeyId,
           apiKeyLabel: key.label,
           providerName: key.provider.name,
@@ -45,9 +119,13 @@ export async function GET(request: NextRequest) {
           rpmLimit: key.rpmLimit,
           tpmCurrent: snapshot?.tpmCurrent ?? 0,
           tpmLimit: key.tpmLimit,
+          rpdCurrent: snapshot?.rpdCurrent ?? 0,
+          rpdLimit: key.rpdLimit,
+          tpdCurrent: snapshot?.tpdCurrent ?? 0,
+          tpdLimit: key.tpdLimit,
           isWaiting: snapshot?.isWaiting ?? false,
           waitingCount: snapshot?.waitingCount ?? 0,
-        },
+        }),
       ]);
     }
 
@@ -63,7 +141,7 @@ export async function GET(request: NextRequest) {
                   provider: {
                     include: {
                       apiKeys: {
-                        select: { id: true, label: true, rpmLimit: true, tpmLimit: true },
+                        select: { id: true, label: true, rpmLimit: true, tpmLimit: true, rpdLimit: true, tpdLimit: true },
                       },
                     },
                   },
@@ -90,17 +168,23 @@ export async function GET(request: NextRequest) {
           seen.add(k.id);
 
           const snapshot = snapshotMap.get(k.id);
-          entries.push({
-            apiKeyId: k.id,
-            apiKeyLabel: k.label,
-            providerName: member.providerModel.provider.name,
-            rpmCurrent: snapshot?.rpmCurrent ?? 0,
-            rpmLimit: k.rpmLimit,
-            tpmCurrent: snapshot?.tpmCurrent ?? 0,
-            tpmLimit: k.tpmLimit,
-            isWaiting: snapshot?.isWaiting ?? false,
-            waitingCount: snapshot?.waitingCount ?? 0,
-          });
+          entries.push(
+            enrich({
+              apiKeyId: k.id,
+              apiKeyLabel: k.label,
+              providerName: member.providerModel.provider.name,
+              rpmCurrent: snapshot?.rpmCurrent ?? 0,
+              rpmLimit: k.rpmLimit,
+              tpmCurrent: snapshot?.tpmCurrent ?? 0,
+              tpmLimit: k.tpmLimit,
+              rpdCurrent: snapshot?.rpdCurrent ?? 0,
+              rpdLimit: k.rpdLimit,
+              tpdCurrent: snapshot?.tpdCurrent ?? 0,
+              tpdLimit: k.tpdLimit,
+              isWaiting: snapshot?.isWaiting ?? false,
+              waitingCount: snapshot?.waitingCount ?? 0,
+            })
+          );
         }
       }
 
@@ -110,12 +194,18 @@ export async function GET(request: NextRequest) {
     // No specific filter — return all keys that have limits configured OR have active traffic
     const allSnapshots = getAllKeyRateSnapshots();
 
-    // Also query DB for all keys that have limits set (even if no traffic yet)
+    // Also query DB for all keys that have ANY limit set (rpm/tpm/rpd/tpd),
+    // so auto-calibrated RPD/TPD-only keys show up even without traffic yet.
     const limitedKeysDb = await prisma.apiKey.findMany({
       where: {
-        OR: [{ rpmLimit: { not: null } }, { tpmLimit: { not: null } }],
+        OR: [
+          { rpmLimit: { not: null } },
+          { tpmLimit: { not: null } },
+          { rpdLimit: { not: null } },
+          { tpdLimit: { not: null } },
+        ],
       },
-      select: { id: true, label: true, rpmLimit: true, tpmLimit: true, provider: { select: { name: true } } },
+      select: keySelect,
     });
 
     // Merge: start with DB-limited keys, then overlay live snapshots
@@ -130,8 +220,13 @@ export async function GET(request: NextRequest) {
         rpmLimit: k.rpmLimit,
         tpmCurrent: 0,
         tpmLimit: k.tpmLimit,
+        rpdCurrent: 0,
+        rpdLimit: k.rpdLimit,
+        tpdCurrent: 0,
+        tpdLimit: k.tpdLimit,
         isWaiting: false,
         waitingCount: 0,
+        history: getRateHistory(k.id),
       });
     }
 
@@ -140,8 +235,11 @@ export async function GET(request: NextRequest) {
       if (existing) {
         existing.rpmCurrent = s.rpmCurrent;
         existing.tpmCurrent = s.tpmCurrent;
+        existing.rpdCurrent = s.rpdCurrent;
+        existing.tpdCurrent = s.tpdCurrent;
         existing.isWaiting = s.isWaiting;
         existing.waitingCount = s.waitingCount;
+        existing.history = getRateHistory(s.apiKeyId);
       } else {
         // Snapshot for a key not in DB? Shouldn't normally happen, but handle
         entryMap.set(s.apiKeyId, {
@@ -152,13 +250,18 @@ export async function GET(request: NextRequest) {
           rpmLimit: null,
           tpmCurrent: s.tpmCurrent,
           tpmLimit: null,
+          rpdCurrent: s.rpdCurrent,
+          rpdLimit: null,
+          tpdCurrent: s.tpdCurrent,
+          tpdLimit: null,
           isWaiting: s.isWaiting,
           waitingCount: s.waitingCount,
+          history: getRateHistory(s.apiKeyId),
         });
       }
     }
 
-    return NextResponse.json(Array.from(entryMap.values()));
+    return NextResponse.json(Array.from(entryMap.values()).map((e) => enrich(e)));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

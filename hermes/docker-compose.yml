@@ -1,0 +1,51 @@
+# ─── Hermes Agent Standalone Compose ───────────────────
+# Runs the Hermes discovery agent + the internal lightweight
+# MCP server together, on the shared bridge network with the
+# LLM Router. Use this to run the agent independently of the
+# full-stack compose (e.g. `docker compose -f hermes/docker-compose.yml up`).
+
+version: "3.8"
+
+networks:
+  llm-router-net:
+    external: true
+
+services:
+  # ─── Hermes Discovery Agent ──────────────────────────
+  hermes-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes-agent
+    networks:
+      - llm-router-net
+    ports:
+      - "4007:4007"
+    environment:
+      - ROUTER_ADMIN_URL=http://llm-router:4006/api/admin
+      # All three MCP tools are served by the single internal mcp-server.
+      - MCP_DDG_URL=http://mcp-server:3000
+      - MCP_FETCH_URL=http://mcp-server:3000
+      - MCP_DOCS_URL=http://mcp-server:3000
+      - TERMINAL_PORT=4007
+      # Optional: enable smart LLM-based extraction for discovery.
+      # Set these in your .env file. If HERMES_LLM_API_KEY is empty,
+      # the agent falls back to heuristic extraction.
+      - HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-https://api.openai.com/v1}
+      - HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-}
+      - HERMES_LLM_MODEL=${HERMES_LLM_MODEL:-gpt-4o-mini}
+    depends_on:
+      - mcp-server
+    restart: unless-stopped
+
+  # ─── Lightweight HTTP MCP Server ─────────────────────
+  # Single container exposing search / fetch_content / query_docs
+  # over HTTP (matches the Hermes agent's mcp-client.js protocol).
+  mcp-server:
+    build:
+      context: ../mcp-server
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    networks:
+      - llm-router-net
+    restart: unless-stopped

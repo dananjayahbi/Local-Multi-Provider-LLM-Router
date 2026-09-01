@@ -1,0 +1,10 @@
+{
+  "name": "hermes-agent",
+  "version": "1.0.0",
+  "description": "Autonomous provider discovery agent for the LLM Router",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {}
+}

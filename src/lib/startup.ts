@@ -3,11 +3,27 @@
 // singleton and display the unified gateway key.
 
 import { initializeAppSettings } from "@/engine/data-access/settings";
-import { checkAndRecoverExpiredPenalties } from "@/engine/health-engine";
+import {
+  checkAndRecoverExpiredPenalties,
+  checkAndRecoverExpiredCooldowns,
+} from "@/engine/health-engine";
+import { backfillPlaintextSecrets, backfillPoolKeys } from "@/engine/data-access/api-keys";
 
 let gatewayKeyShown = false;
 
 export async function runStartup(): Promise<void> {
+  // Backfill legacy encrypted secrets → plaintext (local single-user).
+  const backfilled = await backfillPlaintextSecrets();
+  if (backfilled > 0) {
+    console.log(`  🔑 Backfilled ${backfilled} key(s) to plaintext secrets.`);
+  }
+
+  // Migrate legacy pool-owned keys → provider-level keys shared via PoolApiKey.
+  const migratedKeys = await backfillPoolKeys();
+  if (migratedKeys > 0) {
+    console.log(`  🔗 Migrated ${migratedKeys} pool-owned key(s) to shared provider-level keys.`);
+  }
+
   const { plaintextKey } = await initializeAppSettings();
 
   if (plaintextKey && !gatewayKeyShown) {
@@ -33,5 +49,11 @@ export async function runStartup(): Promise<void> {
   const recovered = await checkAndRecoverExpiredPenalties();
   if (recovered > 0) {
     console.log(`  ✅ Recovered ${recovered} expired penalty(s) on startup.`);
+  }
+
+  // Recover any expired cooldowns on startup
+  const recoveredCooldowns = await checkAndRecoverExpiredCooldowns();
+  if (recoveredCooldowns > 0) {
+    console.log(`  ✅ Recovered ${recoveredCooldowns} expired cooldown(s) on startup.`);
   }
 }

@@ -16,6 +16,12 @@ export interface CanonicalMessage {
   content: string | ContentPart[];
   name?: string;
   tool_call_id?: string;
+  // Assistant messages may carry the tool calls the model requested. Clients
+  // like GitHub Copilot send these back so the next turn stays anchored to the
+  // preceding `tool` results. Dropping them (as a proxy) detaches the tool
+  // result from its call, confusing the model into re-issuing tools forever
+  // (the "todo tool loops" symptom).
+  tool_calls?: CanonicalToolCall[];
 }
 
 export interface CanonicalToolFunction {
@@ -54,13 +60,18 @@ export interface CanonicalToolCall {
   };
 }
 
+export interface CanonicalMessageData {
+  role: "assistant";
+  content: string | null;
+  tool_calls?: CanonicalToolCall[];
+  // Reasoning read natively by GitHub Copilot (collapsible Thinking UI).
+  reasoning?: string;
+  reasoning_content?: string;
+}
+
 export interface CanonicalChoice {
   index: number;
-  message: {
-    role: "assistant";
-    content: string | null;
-    tool_calls?: CanonicalToolCall[];
-  };
+  message: CanonicalMessageData;
   finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null;
 }
 
@@ -92,6 +103,10 @@ export interface CanonicalDeltaChoice {
         arguments?: string;
       };
     }>;
+    // Reasoning fields read natively by GitHub Copilot (collapsible Thinking UI).
+    reasoning?: string;
+    reasoning_content?: string;
+    reasoning_details?: Array<{ type?: string; text?: string; index?: number }>;
   };
   finish_reason?: "stop" | "length" | "tool_calls" | "content_filter" | null;
 }
@@ -121,6 +136,28 @@ export interface ProviderAdapter {
     responseBody: string,
     statusCode: number
   ): { httpStatus: number; providerErrorMessage: string; providerErrorCode: string | null };
+}
+
+/**
+ * Normalize a provider error code into a string (or null). Providers often send
+ * a numeric `error.code` (e.g. `404`, `429`) or an object/array `error.type`,
+ * but the RequestLog `providerErrorCode` column is a `String?`. Passing a raw
+ * number to Prisma throws a validation error, which the orchestrator would
+ * misclassify as `UNKNOWN` and never penalize — producing a phantom "pool
+ * exhausted" while every key is still healthy. Coerce any non-null value to a
+ * safe string so logging always succeeds.
+ */
+export function normalizeProviderErrorCode(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value.length > 0 ? value : null;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  try {
+    const s = JSON.stringify(value);
+    return s && s.length > 0 ? s : null;
+  } catch {
+    return String(value);
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────

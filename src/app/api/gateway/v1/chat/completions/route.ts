@@ -12,7 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyGatewayKey } from "@/lib/gateway-key";
 import { CanonicalRequest, CanonicalDelta } from "@/engine/canonical";
-import { orchestrate } from "@/engine/orchestrator";
+import { orchestrate, ResolvedPool } from "@/engine/orchestrator";
 import { serializeResponse, serializeDelta, serializeStreamEnd } from "@/engine/serializer";
 import { getAdapter } from "@/engine/adapters";
 import { classifyError } from "@/engine/error-classifier";
@@ -23,8 +23,16 @@ import { normalizeCanonicalResponse } from "@/engine/response-normalizer";
 import {
   waitForApiKeyRateLimit,
   settleApiKeyRateLimit,
+  releaseApiKeyRateLimit,
 } from "@/engine/rate-limit/api-key-rate-limiter";
 import { estimateTokensForRateLimit } from "@/engine/rate-limit/token-estimator";
+import { takePendingInjection } from "@/engine/routing/conversation";
+import { resolveSessionId } from "@/engine/routing/session-id";
+import { buildInjection, InjectionInput, LimitName } from "@/engine/playground";
+import {
+  buildExhaustedPoolResponse,
+  buildExhaustedPoolStream,
+} from "@/engine/routing/exhausted-pool";
 
 export async function POST(request: NextRequest) {
   // Auth check
@@ -37,15 +45,8 @@ export async function POST(request: NextRequest) {
   }
 
   const token = authHeader.slice(7);
-  const settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
-  if (!settings || !verifyGatewayKey(token, settings.unifiedGatewayKeyHash)) {
-    return NextResponse.json(
-      { error: { message: "Invalid API key", type: "auth_error" } },
-      { status: 401 }
-    );
-  }
 
-  // Parse body
+  // Parse body (needed to resolve the target pool for per-pool key auth)
   let rawBody: Record<string, unknown>;
   try {
     rawBody = await request.json();
@@ -57,6 +58,31 @@ export async function POST(request: NextRequest) {
   }
 
   const requestedModel = (rawBody.model as string) || "";
+
+  // ─── Per-Pool Key Auth (Task 01) ─────────────────────
+  // A pool owns a plaintext gateway key; authenticating with it grants
+  // access to just that pool. Fall back to the legacy unified key.
+  const authPool = await prisma.pool.findUnique({
+    where: { virtualModelName: requestedModel },
+    select: { gatewayKey: true },
+  });
+
+  let authed = false;
+  if (authPool?.gatewayKey && authPool.gatewayKey === token) {
+    authed = true;
+  } else {
+    const settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
+    if (settings && verifyGatewayKey(token, settings.unifiedGatewayKeyHash)) {
+      authed = true;
+    }
+  }
+  if (!authed) {
+    return NextResponse.json(
+      { error: { message: "Invalid API key", type: "auth_error" } },
+      { status: 401 }
+    );
+  }
+
   console.error(
     `[gateway] Incoming: model=${requestedModel} stream=${rawBody.stream} ` +
     `tools=${Array.isArray(rawBody.tools) ? rawBody.tools.length : 0} ` +
@@ -72,19 +98,30 @@ export async function POST(request: NextRequest) {
       poolMembers: {
         include: {
           providerModel: {
-            include: {
+            select: {
+              id: true,
+              modelId: true,
+              displayName: true,
+              reliableToolCalling: true,
               provider: {
-                include: {
-                  apiKeys: {
-                    select: {
-                      id: true, label: true, secretEncrypted: true,
-                      status: true, penaltyExpiresAt: true,
-                      penaltyLevel: true, lastUsedAt: true,
-                      rpmLimit: true, tpmLimit: true,
-                    },
-                  },
+                select: {
+                  id: true, name: true, baseUrl: true, apiFormat: true,
                 },
               },
+            },
+          },
+        },
+      },
+      poolApiKeys: {
+        include: {
+          apiKey: {
+            select: {
+              id: true, providerId: true, label: true, secret: true, secretEncrypted: true,
+              status: true, penaltyExpiresAt: true, penaltyLevel: true,
+              lastUsedAt: true, rpmLimit: true, tpmLimit: true,
+              rpdLimit: true, tpdLimit: true, tps: true,
+              timeToFirstTokenMs: true, contextWindow: true,
+              cacheCapable: true, cacheDiscountFactor: true,
             },
           },
         },
@@ -93,10 +130,45 @@ export async function POST(request: NextRequest) {
   });
 
   if (pool) {
+    // Resolve the keys attached to this pool via the PoolApiKey join.
+    // Provider-level keys can be shared across pools; the same key record is
+    // used, so its penalty/limits propagate to every pool that references it.
+    const poolKeys = pool.poolApiKeys.map((j) => j.apiKey);
+
+    // ── Multi-session identity ─────────────────────────
+    // Derive a stable session id so this Copilot/VSCode session is pinned to
+    // its own key. Used for per-session locking in the orchestrator. Null is
+    // normalized to undefined so legacy single-session routing is preserved.
+    const sessionId = resolveSessionId({
+      headers: request.headers,
+      body: rawBody,
+      messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
+    }) ?? undefined;
+
+    // ── Copilot injection (Task 06-07) ─────────────────
+    // If a previous request for this pool rotated keys due to a limit,
+    // append the askQuestion guidance so the model can ask the user whether
+    // to switch directly or compact the chat (context is now uncached).
+    const pendingInjection = takePendingInjection(pool.id, sessionId);
+    let messages = (rawBody.messages as CanonicalRequest["messages"]) || [];
+    if (pendingInjection) {
+      const guidance = buildInjection("compact_first", {
+        keyLabel: pendingInjection.keyLabel,
+        limitName: pendingInjection.limitName as LimitName,
+        nextKeyLabel: pendingInjection.nextKeyLabel,
+        promptTokens: pendingInjection.promptTokens,
+        lastPromptTokens: pendingInjection.lastPromptTokens,
+      } satisfies InjectionInput);
+      messages = [
+        { role: "system", content: guidance },
+        ...messages,
+      ];
+    }
+
     // Build canonical request
     const canonicalRequest: CanonicalRequest = {
       model: requestedModel,
-      messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
+      messages,
       system: undefined,
       temperature: rawBody.temperature as number | undefined,
       max_tokens: (rawBody.max_tokens ?? rawBody.max_completion_tokens) as number | undefined,
@@ -107,10 +179,15 @@ export async function POST(request: NextRequest) {
       stop: rawBody.stop as CanonicalRequest["stop"],
     };
 
-    const resolvedPool = {
+    // ── Resolve pool-owned keys per provider ───────────
+    // A pool's keys (pool.apiKeys) are routed to the member whose provider
+    // matches the key's provider.
+    const resolvedPool: ResolvedPool = {
       id: pool.id,
       name: pool.name,
       routingStrategy: pool.routingStrategy,
+      cacheAware: pool.cacheAware,
+      stickyContextTokenBudget: pool.stickyContextTokenBudget,
       members: pool.poolMembers.map((m) => ({
         memberId: m.id,
         priority: m.priority,
@@ -121,21 +198,68 @@ export async function POST(request: NextRequest) {
         providerName: m.providerModel.provider.name,
         baseUrl: m.providerModel.provider.baseUrl,
         apiFormat: m.providerModel.provider.apiFormat,
-        keys: m.providerModel.provider.apiKeys.map((k) => ({
-          apiKeyId: k.id,
-          apiKeyLabel: k.label,
-          secretEncrypted: k.secretEncrypted,
-          status: k.status,
-          penaltyLevel: k.penaltyLevel,
-          penaltyExpiresAt: k.penaltyExpiresAt,
-          lastUsedAt: k.lastUsedAt,
-          rpmLimit: k.rpmLimit as number | null,
-          tpmLimit: k.tpmLimit as number | null,
-        })),
+        reliableToolCalls: m.providerModel.reliableToolCalling !== false,
+        keys: poolKeys
+          .filter((k) => k.providerId === m.providerModel.provider.id)
+          .map((k) => ({
+            apiKeyId: k.id,
+            apiKeyLabel: k.label,
+            secret: k.secret,
+            secretEncrypted: k.secretEncrypted,
+            status: k.status,
+            penaltyLevel: k.penaltyLevel,
+            penaltyExpiresAt: k.penaltyExpiresAt,
+            lastUsedAt: k.lastUsedAt,
+            rpmLimit: k.rpmLimit as number | null,
+            tpmLimit: k.tpmLimit as number | null,
+            rpdLimit: k.rpdLimit as number | null,
+            tpdLimit: k.tpdLimit as number | null,
+            tps: k.tps as number | null,
+            timeToFirstTokenMs: k.timeToFirstTokenMs as number | null,
+            contextWindow: k.contextWindow as number | null,
+            cacheCapable: k.cacheCapable,
+            cacheDiscountFactor: k.cacheDiscountFactor,
+          })),
       })),
     };
 
-    const result = await orchestrate(canonicalRequest, resolvedPool);
+    const result = await orchestrate(canonicalRequest, resolvedPool, { sessionId });
+
+    // ─── Exhausted pool: no healthy key remained ────────
+    // Do NOT return a hard error. Return a valid assistant completion so the
+    // agent sees a final, tool-call-free message and ends its turn (session.idle)
+    // instead of retrying forever. Honors the request's streaming preference.
+    if (result.exhaustedPool) {
+      if (rawBody.stream) {
+        const stream = buildExhaustedPoolStream(requestedModel);
+        const encoder = new TextEncoder();
+        const body = new ReadableStream({
+          async start(controller) {
+            try {
+              for await (const delta of stream) {
+                const chunk = serializeDelta(delta);
+                if (chunk) controller.enqueue(encoder.encode(chunk));
+              }
+              controller.enqueue(encoder.encode(serializeStreamEnd()));
+            } catch (err) {
+              console.error("[gateway:exhausted-stream] stream error:", err);
+              try { controller.enqueue(encoder.encode(serializeStreamEnd())); } catch {}
+            } finally {
+              try { controller.close(); } catch {}
+            }
+          },
+        });
+        return new Response(body, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          },
+        });
+      }
+      return NextResponse.json(serializeResponse(buildExhaustedPoolResponse(requestedModel)));
+    }
 
     if (!result.success) {
       return NextResponse.json(
@@ -222,6 +346,7 @@ export async function POST(request: NextRequest) {
           select: {
             id: true,
             label: true,
+            secret: true,
             secretEncrypted: true,
             status: true,
             rpmLimit: true,
@@ -248,7 +373,14 @@ export async function POST(request: NextRequest) {
     let decryptedKey: string;
 
     try {
-      decryptedKey = decrypt(apiKey.secretEncrypted);
+      decryptedKey =
+        apiKey.secret || (apiKey.secretEncrypted ? decrypt(apiKey.secretEncrypted) : "");
+      if (!decryptedKey) {
+        return NextResponse.json(
+          { error: { message: "API key has no secret", type: "internal_error" } },
+          { status: 500 }
+        );
+      }
     } catch {
       return NextResponse.json(
         { error: { message: "Failed to decrypt API key", type: "internal_error" } },
@@ -311,7 +443,15 @@ export async function POST(request: NextRequest) {
           httpStatus: response.status,
           latencyMs,
           requestedVirtualModel: requestedModel,
+          providerErrorMessage: classified.providerErrorMessage,
+          providerErrorCode: classified.providerErrorCode,
+          gatewayErrorMessage: classified.providerErrorMessage,
         });
+
+        // Upstream rejected it — release the reservation so the local counter
+        // isn't inflated (no unnecessary throttling for a key that never
+        // reached the provider).
+        await releaseApiKeyRateLimit(reservation);
 
         return NextResponse.json(
           { error: { message: classified.providerErrorMessage, type: classified.classification } },
@@ -355,14 +495,18 @@ export async function POST(request: NextRequest) {
                 for (const line of lines) {
                   if (!line.trim()) continue;
                   const delta = adapter.parseStreamChunk(line);
-                  if (delta && delta.choices && delta.choices.length > 0) {
+                  // Forward any delta that carries content OR a usage-only
+                  // terminal chunk (empty choices[] + populated usage). The
+                  // usage chunk is what populates Copilot's Context Window
+                  // indicator.
+                  if (delta && (delta.usage != null || (delta.choices && delta.choices.length > 0))) {
                     emitDelta(delta);
                   }
                 }
               }
               if (buffer.trim()) {
                 const delta = adapter.parseStreamChunk(buffer);
-                if (delta && delta.choices && delta.choices.length > 0) {
+                if (delta && (delta.usage != null || (delta.choices && delta.choices.length > 0))) {
                   emitDelta(delta);
                 }
               }
@@ -429,7 +573,14 @@ export async function POST(request: NextRequest) {
         httpStatus: 0,
         latencyMs,
         requestedVirtualModel: requestedModel,
+        providerErrorMessage: message,
+        providerErrorCode: "NETWORK",
+        gatewayErrorMessage: message,
       });
+
+      // Network error — release the reservation so no stale counter inflates
+      // the key's local RPM/TPM and causes unnecessary throttling.
+      await releaseApiKeyRateLimit(reservation);
 
       return NextResponse.json(
         { error: { message, type: "network_error" } },

@@ -16,31 +16,81 @@ model Provider {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // When this Provider was materialized from an approved discovery draft.
+  draftProviderId String?  @unique
+  draftProvider   DraftProvider? @relation(fields: [draftProviderId], references: [id], onDelete: SetNull)
+
   apiKeys        ApiKey[]
   providerModels ProviderModel[]
+  calibrationSessions CalibrationSession[]
 }
 
 // ─── API Key ────────────────────────────────────────────
+// A key now belongs to a POOL (not just a provider), so each pool
+// can own its own set of keys from different providers with their
+// own rate/token limits. Local single-user → plaintext `secret`,
+// always copyable. (design doc 06)
 model ApiKey {
   id                String    @id @default(cuid())
+  // LEGACY: keys are now provider-level credentials shared across pools via
+  // the PoolApiKey join table. `poolId` is kept only for one-time backfill.
+  poolId            String?
   providerId        String
   label             String
-  secretEncrypted   String
+  secret            String?       // plaintext (local single-user, always copyable)
+  secretEncrypted   String?       // kept for backward-compat / migration reads
+
+  // ── rate / token limits ──
   rpmLimit          Int?
   tpmLimit          Int?
-  status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED
+  rpdLimit          Int?
+  tpdLimit          Int?
+  tps               Float?        // tokens/sec (speed)
+  timeToFirstTokenMs Int?         // latency
+  contextWindow     Int?          // max context tokens
+  cacheCapable      Boolean   @default(true)
+  cacheDiscountFactor Float   @default(0.1) // cached-token price fraction
+
+  // ── absolute max (hard cap) parameters ──
+  // Optional per-key ceilings the AUTO-CALIBRATOR will never exceed when it
+  // probes a limit upward. Distinct from the operating limit above: even if
+  // `rpmLimit` is null (∞) or the calibrator wants to raise it, it can never
+  // go higher than the matching `max*` value. null = no extra hard cap.
+  maxRpmLimit       Int?
+  maxTpmLimit       Int?
+  maxRpdLimit       Int?
+  maxTpdLimit       Int?
+
+  status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED, TESTING, COOLDOWN
   manuallyDisabled  Boolean   @default(false)
   penaltyLevel      Int       @default(0)
   penaltyExpiresAt  DateTime?
   lastPenaltyEndedAt DateTime?
   suspendedReason   String?
+  // ── penalty type (task 04) ──
+  // "VARIABLE" = escalating cooldown seeded by key history + auto-calibration.
+  // "PRE_DEFINED" = fixed duration tied to the limit that was hit (RPM/TPM/RPD/TPD).
+  penaltyType       String?   // VARIABLE, PRE_DEFINED
+  penaltyReason     String?   // RATE_LIMITED, RPM, TPM, RPD, TPD, SERVER_ERROR, NETWORK_ERROR
   consecutiveFailures Int     @default(0)
+  calibrated        Boolean   @default(false)
+  lastCalibratedAt  DateTime?
+  // ── auto-calibration ──
+  // When enabled, the orchestrator observes real provider outcomes and
+  // tunes the key's RPM/TPM/RPD/TPD limits toward their true ceiling.
+  autoCalibration       Boolean  @default(false)
+  autoCalibrationState  String?  // JSON: { baseline, consecutiveSuccesses, lastAdjustmentAt }
   lastUsedAt        DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  provider    Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  pool       Pool?      @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  provider   Provider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
   requestLogs RequestLog[]
+  benchmarks  ApiKeyBenchmark[]
+  poolApiKeys PoolApiKey[]
+  calibrationSessions CalibrationSession[]
+  autoCalibrationEvents AutoCalibrationEvent[]
 }
 
 // ─── Provider Model ─────────────────────────────────────
@@ -53,12 +103,18 @@ model ProviderModel {
   supportsFunctionCalling Boolean  @default(false)
   contextWindow          Int?
   enabled                Boolean   @default(true)
+  // Some free reasoning models (e.g. OpenRouter stealth/ox-alpha) return an
+  // EMPTY completion when `tools` is sent as an array, despite advertising
+  // function calling. Set this false to strip tools on the first attempt so
+  // the client never receives an empty response.
+  reliableToolCalling    Boolean   @default(true)
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 
   provider    Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
   poolMembers PoolMember[]
   requestLogs RequestLog[]
+  calibrationSessions CalibrationSession[]
 }
 
 // ─── Pool ───────────────────────────────────────────────
@@ -67,12 +123,34 @@ model Pool {
   name              String
   virtualModelName  String   @unique
   description       String?
-  routingStrategy   String   @default("ROUND_ROBIN") // ROUND_ROBIN, PRIORITY
+  routingStrategy   String   @default("KEY_AWARE") // ROUND_ROBIN, PRIORITY, KEY_AWARE
+  gatewayKey        String?  @unique   // plaintext per-pool key, always copyable
+  gatewayKeyPrefix  String?            // masked preview for list view
+  cacheAware        Boolean  @default(true)
+  stickyContextTokenBudget Int @default(0)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   poolMembers PoolMember[]
+  poolApiKeys PoolApiKey[]
+  apiKeys     ApiKey[]       // legacy pool-owned keys (one-time backfill source)
   requestLogs RequestLog[]
+}
+
+// ─── Pool ↔ API Key (many-to-many) ────────────────────
+// A provider-level API key can be shared across MULTIPLE pools. The penalty
+// / limits live on the ApiKey, so sharing it propagates any penalty to every
+// pool that uses it. A pool references the keys it can route to via this join.
+model PoolApiKey {
+  id        String   @id @default(cuid())
+  poolId    String
+  apiKeyId  String
+  createdAt DateTime @default(now())
+
+  pool   Pool   @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@unique([poolId, apiKeyId])
 }
 
 // ─── Pool Member ────────────────────────────────────────
@@ -102,6 +180,14 @@ model RequestLog {
   requestedVirtualModel  String
   createdAt              DateTime @default(now())
 
+  // ── failure detail (task: detailed error expansion) ──
+  // What the PROVIDER actually returned (raw message + code), and the message
+  // the GATEWAY surfaced back to the client (e.g. Copilot). Stored so the
+  // /logs row can expand to show both sides of an error.
+  providerErrorMessage   String?
+  providerErrorCode      String?
+  gatewayErrorMessage    String?
+
   pool          Pool?          @relation(fields: [poolId], references: [id], onDelete: SetNull)
   apiKey        ApiKey?        @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   providerModel ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: SetNull)
@@ -116,4 +202,204 @@ model AppSettings {
   penaltyMultiplier           Float @default(3)
   penaltyMaxCooldownSeconds    Int @default(21600)
   penaltyResetWindowSeconds    Int @default(3600)
+}
+
+// ─── ApiKey Benchmark ───────────────────────────────────
+// Stores historical benchmark metrics per execution run.
+model ApiKeyBenchmark {
+  id                 String   @id @default(cuid())
+  apiKeyId           String
+  ttftMs             Int
+  avgTps             Float
+  latencyDriftRatio  Float
+  isThrottled        Boolean  @default(false)
+  passed             Boolean
+  failureReason      String?
+  testedAt           DateTime @default(now())
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+}
+
+// ─── Auto-Calibration Event ─────────────────────────────
+// Timeline of automatic limit adjustments and observed provider errors
+// for a single auto-calibrated key (task 02). The orchestrator appends one
+// row every time it scales a limit down (throttle) or probes up (success
+// streak), so the "Auto Calibrations" page can render a detailed history.
+model AutoCalibrationEvent {
+  id          String   @id @default(cuid())
+  apiKeyId    String
+  kind        String   // FAILURE, SUCCESS, SCALE_DOWN, SCALE_UP, BASELINE_RESET
+  limit       String?  // RPM, TPM, RPD, TPD, or null for generic events
+  message     String
+  detail      String?  // JSON: before/after limits, classification, streak, etc.
+  createdAt   DateTime @default(now())
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([apiKeyId, createdAt])
+}
+
+// ─── Benchmark Config (singleton) ───────────────────────
+// Stores benchmarking rules and throttle limits.
+model BenchmarkConfig {
+  id                     String  @id @default("singleton")
+  baselineProviderModelId String?
+  targetTps              Float   @default(60.0)
+  targetRpm              Int     @default(15)
+  ttftDriftThreshold     Float   @default(2.5)
+  tpsDriftThreshold      Float   @default(2.0)
+  postTestCooldownSeconds Int    @default(120)
+  maxParallelTests       Int     @default(3)
+  updatedAt              DateTime @updatedAt
+}
+
+// ─── Draft Provider ─────────────────────────────────────
+// Stores discovered LLM providers awaiting key assignment.
+model DraftProvider {
+  id               String   @id @default(cuid())
+  name             String
+  baseUrl          String
+  apiFormat        String   // CHAT_COMPLETIONS, MESSAGES, RESPONSES
+  sourceUrl        String?
+  // Onboarding pipeline stage (task 03-04):
+  //   RAW      — agent-discovered, informational card only
+  //   APPROVED — user approved; API key(s) can be configured
+  //   CONFIGURED — user pushed; models configured + materialized as a Provider
+  //   REJECTED — user dismissed
+  stage            String   @default("RAW")
+  status           String   @default("PENDING_KEY") // PENDING_KEY, TESTING, ACCEPTED, REJECTED
+  discoveredModels String   // JSON array of model IDs + capabilities
+  details          String?  // JSON blob of extra agent findings (read-only for the user)
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // The real Provider created when this draft reaches CONFIGURED.
+  provider Provider?
+}
+
+// ─── Discovery Request ─────────────────────────────────
+// A user-triggered research session. The Hermes agent polls
+// for PENDING requests and executes them with the optional
+// user-supplied prompt to guide exploration.
+model DiscoveryRequest {
+  id           String    @id @default(cuid())
+  prompt       String?   // optional user-injected research prompt
+  status       String    @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  resultCount  Int       @default(0)
+  error        String?
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  events DiscoveryEvent[]
+}
+
+// ─── Discovery Event ───────────────────────────────────
+// A single step in a discovery session's live conversation
+// stream. The Hermes agent appends events as it searches,
+// fetches, extracts, and stages providers so the UI can render
+// a real-time agent conversation instead of a static status.
+model DiscoveryEvent {
+  id          String   @id @default(cuid())
+  requestId   String
+  kind        String   // INFO, SEARCH, FETCH, EXTRACT, STAGE, SKIP, ERROR, DONE
+  message     String
+  detail      String?
+  createdAt   DateTime @default(now())
+
+  request DiscoveryRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
+
+// ─── Chat Session ──────────────────────────────────────
+// A persistent conversation with the Hermes agent. Mirrors
+// the full conversation and supports file uploads.
+model ChatSession {
+  id        String   @id @default(cuid())
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ChatMessage[]
+  files    ChatFile[]
+}
+
+// ─── Chat Message ──────────────────────────────────────
+// A single turn in a chat session. `role` is USER or AGENT.
+// `kind` distinguishes plain text from structured assets
+// (e.g. provider cards, rate-limit findings) that the UI can
+// render in a drawer instead of inline.
+model ChatMessage {
+  id        String   @id @default(cuid())
+  sessionId String
+  role      String   // USER, AGENT
+  kind      String   @default("TEXT") // TEXT, ASSETS, ERROR
+  content   String
+  assets    String?  // JSON array of structured asset payloads
+  createdAt DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ─── Chat File ─────────────────────────────────────────
+// A file uploaded by the user into a chat session (e.g. a
+// screenshot of a provider's rate-limit page, or a key file).
+model ChatFile {
+  id        String   @id @default(cuid())
+  sessionId String
+  name      String
+  mimeType  String
+  size      Int
+  data      String   // base64-encoded content (SQLite-friendly)
+  createdAt DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ─── Calibration Session ──────────────────────────────
+// A single calibration run scoped to ONE provider (one provider,
+// one key, one model at a time). Unlike the legacy stress-test
+// benchmark runner, the Hermes agent researches the provider's
+// published free-quota rate limits (RPM / TPM / RPD / TPD, etc.)
+// from the web WITHOUT stressing the key. The findings are shown
+// to the user, who then applies the limits to the key manually.
+model CalibrationSession {
+  id              String   @id @default(cuid())
+  providerId      String
+  apiKeyId        String
+  providerModelId String
+  status          String   @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  findings        String?  // JSON: researched free-quota rate-limit findings
+  applied         Boolean  @default(false) // true once user applies findings to the key
+  error           String?
+  createdAt       DateTime @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  provider       Provider            @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  apiKey         ApiKey              @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  providerModel  ProviderModel       @relation(fields: [providerModelId], references: [id], onDelete: Cascade)
+  events         CalibrationEvent[]
+
+  @@index([providerId])
+  @@index([apiKeyId])
+  @@index([status])
+}
+
+// ─── Calibration Event ─────────────────────────────────
+// A single step in a calibration session's live activity
+// stream. The Hermes agent appends events as it searches and
+// extracts rate-limit findings so the UI renders the research
+// in real time (mirrors DiscoveryEvent).
+model CalibrationEvent {
+  id        String   @id @default(cuid())
+  sessionId String
+  kind      String   // INFO, SEARCH, FETCH, EXTRACT, RESULT, ERROR, DONE
+  message   String
+  detail    String?
+  createdAt DateTime @default(now())
+
+  session CalibrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
 }

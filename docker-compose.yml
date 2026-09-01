@@ -1,0 +1,92 @@
+# ─── Full-Stack Docker Compose ─────────────────────────
+# Runs the LLM Router + Hermes discovery agent + MCP servers
+# together on a shared bridge network for full auto-discovery.
+
+networks:
+  llm-router-net:
+    driver: bridge
+
+volumes:
+  router-db:
+    # Persists the SQLite database across container restarts
+
+services:
+  # ─── LLM Router (Next.js) ────────────────────────────
+  llm-router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-router
+    networks:
+      - llm-router-net
+    ports:
+      - "4006:4006"
+    environment:
+      - NODE_ENV=production
+      - PORT=4006
+      - HOSTNAME=0.0.0.0
+      - DATABASE_URL=file:/app/prisma/dev.db
+      # ENCRYPTION_SECRET is injected from the host .env file
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET}
+      # How long (seconds) the gateway holds a request when every key in a pool
+      # is penalized, waiting for one to recover before retrying. 0 = disabled.
+      - RECOVERY_WAIT_MAX_SECONDS=${RECOVERY_WAIT_MAX_SECONDS:-240}
+      # Once every key in a pool is exhausted, the pre-defined "pool exhausted"
+      # completion is only emitted when the SHORTEST remaining penalty exceeds
+      # this value (seconds). Shorter penalties keep the request queued until a
+      # key recovers. Default 1800 (30 min).
+      - EXHAUSTED_MIN_PENALTY_SECONDS=${EXHAUSTED_MIN_PENALTY_SECONDS:-1800}
+      # How far back (seconds) the router looks at durable SUCCESS request logs
+      # on boot to re-hydrate its in-memory RPM/TPM/RPD/TPD sliding windows so
+      # it remembers recent usage across a PC/container restart and never stops
+      # pre-throttling (which would cause a spurious provider 429). 0 = disable.
+      - RATE_WINDOW_HYDRATION_LOOKBACK_SECONDS=${RATE_WINDOW_HYDRATION_LOOKBACK_SECONDS:-86400}
+      # How long (ms) a multi-session key lock survives without any request from
+      # its session touching it before it is swept. 0 = never expire. Default
+      # 60 min — a session that closed its VSCode window stops pinning its key.
+      - SESSION_LOCK_TTL_MS=${SESSION_LOCK_TTL_MS:-3600000}
+      # Log each resolved session id + session→key lock decision (0 = off).
+      - SESSION_ID_DEBUG=${SESSION_ID_DEBUG:-0}
+    volumes:
+      - router-db:/app/prisma
+    restart: unless-stopped
+
+  # ─── Hermes Discovery Agent ──────────────────────────
+  hermes-agent:
+    build:
+      context: ./hermes
+      dockerfile: Dockerfile
+    container_name: hermes-agent
+    networks:
+      - llm-router-net
+    ports:
+      # Real PTY WebSocket terminal (the browser connects here)
+      - "4007:4007"
+    environment:
+      - ROUTER_ADMIN_URL=http://llm-router:4006/api/admin
+      - MCP_DDG_URL=http://mcp-server:3000
+      - MCP_FETCH_URL=http://mcp-server:3000
+      - MCP_DOCS_URL=http://mcp-server:3000
+      - TERMINAL_PORT=4007
+      # Optional: enable smart LLM-based extraction for discovery.
+      # Set these in your .env file. If HERMES_LLM_API_KEY is empty,
+      # the agent falls back to heuristic extraction.
+      - HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-https://api.openai.com/v1}
+      - HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-}
+      - HERMES_LLM_MODEL=${HERMES_LLM_MODEL:-gpt-4o-mini}
+    depends_on:
+      - llm-router
+      - mcp-server
+    restart: unless-stopped
+
+  # ─── Lightweight HTTP MCP Server ─────────────────────
+  # Single container exposing search / fetch_content / query_docs
+  # over HTTP (matches the Hermes agent's mcp-client.js protocol).
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    networks:
+      - llm-router-net
+    restart: unless-stopped

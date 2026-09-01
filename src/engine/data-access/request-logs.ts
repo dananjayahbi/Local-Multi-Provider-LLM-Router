@@ -1,6 +1,7 @@
 // ─── Request Log Data Access ───────────────────────────
 
 import { prisma } from "@/lib/prisma";
+import { normalizeProviderErrorCode } from "@/engine/canonical";
 
 export interface CreateRequestLogInput {
   poolId?: string | null;
@@ -14,10 +15,24 @@ export interface CreateRequestLogInput {
   promptTokens?: number | null;
   completionTokens?: number | null;
   requestedVirtualModel: string;
+  // Failure detail surfaced in the /logs expansion:
+  providerErrorMessage?: string | null;
+  providerErrorCode?: string | null;
+  gatewayErrorMessage?: string | null;
 }
 
 export async function createRequestLog(data: CreateRequestLogInput) {
-  return prisma.requestLog.create({ data });
+  // Defensive coerce: `providerErrorCode` is a `String?` column. Providers /
+  // adapters may hand us a number (e.g. a 404 code); passing it raw throws a
+  // Prisma validation error that the orchestrator would misclassify as UNKNOWN
+  // and never penalize — the cause of a phantom "pool exhausted" while every
+  // key is still healthy. Normalize the code at the write boundary so a single
+  // bad value can never take the whole request down.
+  const safeData =
+    data.providerErrorCode != null && typeof data.providerErrorCode !== "string"
+      ? { ...data, providerErrorCode: normalizeProviderErrorCode(data.providerErrorCode) }
+      : data;
+  return prisma.requestLog.create({ data: safeData });
 }
 
 export interface LogFilters {
@@ -61,6 +76,7 @@ export async function getLogs(filters: LogFilters = {}) {
         pool: { select: { id: true, name: true } },
         providerModel: { select: { id: true, displayName: true } },
       },
+      // Surface provider + gateway error detail for the /logs expansion.
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,

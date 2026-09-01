@@ -5,7 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Copy, RefreshCw, Eye, EyeOff, Save } from "lucide-react";
+import { Save, Server, Clock, Info } from "lucide-react";
+import { CopyButton } from "@/components/pools/copy-button";
+import { gatewayBaseUrl } from "@/lib/gateway-url";
+import { BackupSettingsPanel } from "@/components/settings/backup-settings-panel";
 
 interface SettingsData {
   gatewayKeyPrefix: string;
@@ -19,8 +22,6 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [newKey, setNewKey] = useState<string | null>(null);
-  const [showNewKey, setShowNewKey] = useState(false);
 
   const [form, setForm] = useState({
     penaltyBaseCooldownSeconds: 600,
@@ -28,6 +29,12 @@ export default function SettingsPage() {
     penaltyMaxCooldownSeconds: 21600,
     penaltyResetWindowSeconds: 3600,
   });
+
+  // Compute the base URL client-side so it reflects the active host.
+  const [baseUrl, setBaseUrl] = useState("");
+  useEffect(() => {
+    setBaseUrl(gatewayBaseUrl());
+  }, []);
 
   const loadSettings = async () => {
     const res = await fetch("/api/admin/settings");
@@ -55,77 +62,40 @@ export default function SettingsPage() {
     loadSettings();
   };
 
-  const handleRegenerateKey = async () => {
-    if (!confirm("Regenerate the gateway key? The old key will stop working immediately.")) return;
-    setNewKey(null);
-    const res = await fetch("/api/admin/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "regenerate-key" }),
-    });
-    const data = await res.json();
-    setNewKey(data.plaintextKey);
-    setShowNewKey(true);
-  };
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-  };
-
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
 
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">Gateway configuration and penalty engine tuning</p>
+        <p className="text-muted-foreground">Gateway endpoint and penalty engine tuning</p>
       </div>
 
-      {/* Gateway Key */}
+      {/* Gateway Endpoint */}
       <Card>
         <CardHeader>
-          <CardTitle>Unified Gateway Key</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Server className="h-4 w-4" /> Gateway Endpoint
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            This is the key you paste into VS Code Copilot or any OpenAI-compatible client.
-            Point your client to <code className="bg-muted px-1 py-0.5 rounded">http://localhost:4006/api/gateway/v1</code>
+            Point your OpenAI-compatible client (e.g. VS Code Copilot) at this base URL and use
+            the pool&apos;s gateway key for authentication.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 bg-muted px-3 py-2 rounded text-sm">
-              {settings?.gatewayKeyPrefix || "Not configured"}
-            </code>
-            <Button variant="outline" size="sm" onClick={handleRegenerateKey}>
-              <RefreshCw className="mr-1 h-3 w-3" /> Regenerate
-            </Button>
+            <code className="flex-1 bg-muted px-3 py-2 rounded text-sm break-all">{baseUrl}</code>
+            <CopyButton value={baseUrl} />
           </div>
-          {newKey && (
-            <div className="rounded-lg border-2 border-red-200 bg-red-50 dark:bg-red-950 p-4">
-              <p className="text-sm font-bold text-red-600 dark:text-red-400 mb-2">
-                ⚠️ Copy this key NOW. It will NOT be shown again!
-              </p>
-              <div className="flex items-center gap-2">
-                <Input
-                  value={showNewKey ? newKey : "••••••••••••••••••••••••••••••••"}
-                  readOnly
-                  className="font-mono"
-                />
-                <Button variant="outline" size="icon" onClick={() => setShowNewKey(!showNewKey)}>
-                  {showNewKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
-                <Button variant="outline" size="icon" onClick={() => copyToClipboard(newKey)}>
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          )}
         </CardContent>
       </Card>
 
       {/* Penalty Engine Settings */}
       <Card>
         <CardHeader>
-          <CardTitle>Penalty Engine</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Clock className="h-4 w-4" /> Penalty Engine
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -174,23 +144,26 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Server Info */}
+      {/* Backup & Restore */}
+      <BackupSettingsPanel />
+
+      {/* Info */}
       <Card>
         <CardHeader>
-          <CardTitle>Server Info</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Info className="h-4 w-4" /> Info
+          </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="grid grid-cols-2 text-sm">
-            <span className="text-muted-foreground">Gateway Endpoint:</span>
-            <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-              POST http://localhost:3000/api/gateway/v1/chat/completions
-            </code>
-          </div>
-          <div className="grid grid-cols-2 text-sm">
+        <CardContent className="space-y-2 text-sm">
+          <div className="grid grid-cols-2">
             <span className="text-muted-foreground">VS Code Copilot Config:</span>
             <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-              &quot;chat.disableImplicitContext&quot;: true in Copilot settings
+              &quot;chat.disableImplicitContext&quot;: true
             </code>
+          </div>
+          <div className="grid grid-cols-2">
+            <span className="text-muted-foreground">Auth:</span>
+            <span className="text-xs">Use a pool&apos;s gateway key (see Pools → Gateway Key)</span>
           </div>
         </CardContent>
       </Card>

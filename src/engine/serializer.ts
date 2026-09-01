@@ -20,6 +20,9 @@ export function serializeResponse(canonical: CanonicalResponse): object {
         ...(choice.message.tool_calls && choice.message.tool_calls.length > 0
           ? { tool_calls: choice.message.tool_calls }
           : {}),
+        // Pass reasoning through so Copilot renders the collapsible Thinking UI.
+        ...(choice.message.reasoning ? { reasoning: choice.message.reasoning } : {}),
+        ...(choice.message.reasoning_content ? { reasoning_content: choice.message.reasoning_content } : {}),
       },
       finish_reason: choice.finish_reason,
     })),
@@ -34,9 +37,14 @@ export function serializeResponse(canonical: CanonicalResponse): object {
 }
 
 export function serializeDelta(delta: CanonicalDelta): string {
-  // Skip deltas with no choices — some providers emit empty-choice chunks
-  // (e.g., during tool-call handoffs) that would break Copilot.
-  if (!delta.choices || delta.choices.length === 0) {
+  // Skip deltas that carry nothing usable — pure heartbeats (no choices AND
+  // no usage). A usage-only terminal chunk (empty choices[] + populated usage
+  // object) MUST be forwarded so Copilot's Context Window indicator receives
+  // its token counts. OpenAI sends exactly `{"choices":[],"usage":{...}}`
+  // before `data: [DONE]` when `stream_options.include_usage=true`, and VS Code's
+  // Copilot SSEProcessor reads `usage` independently of `choices`.
+  const hasUsage = delta.usage != null;
+  if ((!delta.choices || delta.choices.length === 0) && !hasUsage) {
     return "";
   }
 
@@ -45,13 +53,13 @@ export function serializeDelta(delta: CanonicalDelta): string {
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model: delta.model || "",
-    choices: delta.choices.map((c) => ({
+    choices: (delta.choices || []).map((c) => ({
       index: c.index,
       delta: c.delta ?? {}, // some providers omit delta — ensure {} so JSON.stringify never drops it
       finish_reason: c.finish_reason ?? null,
     })),
   };
-  if (delta.usage) {
+  if (hasUsage) {
     payload.usage = delta.usage;
   }
   return `data: ${JSON.stringify(payload)}\n\n`;

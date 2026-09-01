@@ -21,6 +21,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CopyButton } from "@/components/pools/copy-button";
+import {
+  PoolFilterBar,
+  matchesPoolFilters,
+  comparePools,
+  PoolFilters,
+  PoolSort,
+} from "@/components/pools/pool-filter-bar";
+import { PoolItem } from "@/components/pools/pool-types";
 import {
   Plus,
   Layers,
@@ -31,19 +40,11 @@ import {
   GripVertical,
   ArrowUp,
   ArrowDown,
+  KeyRound,
+  RefreshCw,
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────
-
-interface PoolItem {
-  id: string;
-  name: string;
-  virtualModelName: string;
-  routingStrategy: string;
-  _count: { poolMembers: number };
-  healthyKeys: number;
-  totalKeys: number;
-}
 
 interface ProviderOption {
   id: string;
@@ -88,11 +89,20 @@ export default function PoolsPage() {
   const [advName, setAdvName] = useState("");
   const [advVirtualName, setAdvVirtualName] = useState("");
   const [advDescription, setAdvDescription] = useState("");
-  const [advStrategy, setAdvStrategy] = useState("ROUND_ROBIN");
+  const [advStrategy, setAdvStrategy] = useState("KEY_AWARE");
   const [members, setMembers] = useState<MemberRow[]>([newMember(0)]);
   const [allProviders, setAllProviders] = useState<ProviderOption[]>([]);
   const [providerModels, setProviderModels] = useState<Record<string, ModelOption[]>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+
+  // Filter + sort state
+  const [filters, setFilters] = useState<PoolFilters>({
+    query: "",
+    strategy: "",
+    type: "",
+  });
+  const [sort, setSort] = useState<PoolSort>({ key: "createdAt", dir: "desc" });
 
   function newMember(priority: number): MemberRow {
     return { tempId: Date.now() + Math.random(), providerId: "", providerModelId: "", priority };
@@ -143,12 +153,23 @@ export default function PoolsPage() {
 
   // ─── Handlers ─────────────────────────────────────────
 
+  const handleRegenerate = async (poolId: string) => {
+    setRegeneratingId(poolId);
+    const res = await fetch(`/api/admin/pools/${poolId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "regenerate-key" }),
+    });
+    setRegeneratingId(null);
+    if (res.ok) loadPools();
+  };
+
   const resetForms = () => {
     setQuickForm({ providerModelId: "", virtualModelName: "" });
     setAdvName("");
     setAdvVirtualName("");
     setAdvDescription("");
-    setAdvStrategy("ROUND_ROBIN");
+    setAdvStrategy("KEY_AWARE");
     setMembers([newMember(0)]);
     setMode("quick");
   };
@@ -237,6 +258,10 @@ export default function PoolsPage() {
   // ─── Render ───────────────────────────────────────────
 
   if (loading) return <div className="text-muted-foreground">Loading...</div>;
+
+  const filteredPools = pools
+    .filter((p) => matchesPoolFilters(p, filters))
+    .sort((a, b) => comparePools(a, b, sort));
 
   return (
     <div className="space-y-6">
@@ -363,14 +388,17 @@ export default function PoolsPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="KEY_AWARE">Key Aware</SelectItem>
                       <SelectItem value="ROUND_ROBIN">Round Robin</SelectItem>
                       <SelectItem value="PRIORITY">Priority</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    {advStrategy === "ROUND_ROBIN"
-                      ? "Keys are ordered least-recently-used first, spreading load evenly."
-                      : "Keys are ordered by priority (lower = tried first), then least-recently-used."}
+                    {advStrategy === "KEY_AWARE"
+                      ? "Caching-aware: keeps a chat on the same key to preserve prompt cache, balancing limits."
+                      : advStrategy === "ROUND_ROBIN"
+                        ? "Keys are ordered least-recently-used first, spreading load evenly."
+                        : "Keys are ordered by priority (lower = tried first), then least-recently-used."}
                   </p>
                 </div>
 
@@ -501,6 +529,14 @@ export default function PoolsPage() {
         </Dialog>
       </div>
 
+      <PoolFilterBar
+        value={filters}
+        onChange={setFilters}
+        sort={sort}
+        onSortChange={setSort}
+        totalCount={filteredPools.length}
+      />
+
       {/* ─── Pool List ─── */}
       {pools.length === 0 ? (
         <Card>
@@ -510,9 +546,15 @@ export default function PoolsPage() {
             <p className="text-sm text-muted-foreground">Create your first pool to start routing requests.</p>
           </CardContent>
         </Card>
+      ) : filteredPools.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+            <p className="text-sm">No pools match your current filters.</p>
+          </CardContent>
+        </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {pools.map((p) => (
+          {filteredPools.map((p) => (
             <Card
               key={p.id}
               className="cursor-pointer hover:shadow-md transition-shadow"
@@ -526,6 +568,23 @@ export default function PoolsPage() {
                   </div>
                   <Badge variant="outline">{p._count.poolMembers === 1 ? "Simple" : "Unified"}</Badge>
                 </div>
+                <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-2 py-1 mb-3">
+                  <KeyRound className="h-3 w-3 text-muted-foreground shrink-0" />
+                  <code className="flex-1 break-all font-mono text-xs">{p.gatewayKey}</code>
+                  <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                    <CopyButton value={p.gatewayKey} className="h-6 w-6 shrink-0" />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 shrink-0"
+                      title="Regenerate gateway key"
+                      disabled={regeneratingId === p.id}
+                      onClick={() => handleRegenerate(p.id)}
+                    >
+                      <RefreshCw className={`h-3 w-3 ${regeneratingId === p.id ? "animate-spin" : ""}`} />
+                    </Button>
+                  </div>
+                </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <div className="flex items-center gap-2">
                     <span className="flex items-center gap-1">
@@ -533,7 +592,13 @@ export default function PoolsPage() {
                     </span>
                     <span>/ {p.totalKeys} keys healthy</span>
                   </div>
-                  <Badge variant="outline">{p.routingStrategy === "ROUND_ROBIN" ? "Round Robin" : "Priority"}</Badge>
+                  <Badge variant="outline">
+                    {p.routingStrategy === "ROUND_ROBIN"
+                      ? "Round Robin"
+                      : p.routingStrategy === "PRIORITY"
+                        ? "Priority"
+                        : "Key Aware"}
+                  </Badge>
                 </div>
               </CardContent>
             </Card>

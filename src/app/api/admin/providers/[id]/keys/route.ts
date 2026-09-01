@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getKeysByProvider, createApiKey } from "@/engine/data-access/api-keys";
+import { getKeysByProvider, createApiKey, addKeyToPool } from "@/engine/data-access/api-keys";
 import { parseRateLimitInput } from "@/lib/api-key-rate-limits";
+import { enableAutoCalibration } from "@/engine/benchmark/auto-calibration";
 
 export async function GET(
   _request: NextRequest,
@@ -22,7 +23,14 @@ export async function POST(
   try {
     const { id } = await params;
     const body = await request.json();
-    const { label, secret, rpmLimit, tpmLimit } = body;
+    const {
+      label, secret, poolId,
+      rpmLimit, tpmLimit, rpdLimit, tpdLimit,
+      tps, timeToFirstTokenMs, contextWindow,
+      cacheCapable, cacheDiscountFactor,
+      autoCalibration,
+      maxRpmLimit, maxTpmLimit, maxRpdLimit, maxTpdLimit,
+    } = body;
 
     if (!label || !secret) {
       return NextResponse.json(
@@ -31,28 +39,69 @@ export async function POST(
       );
     }
 
-    const parsedRpm = parseRateLimitInput(rpmLimit, {
-      mode: "create",
-      fieldName: "rpmLimit",
-    });
-    if (parsedRpm.error) {
-      return NextResponse.json({ error: parsedRpm.error }, { status: 400 });
-    }
+    const parsed = (
+      fieldName: any,
+      value: unknown,
+      allowFloat = false
+    ): { value?: number | null; error?: string } => {
+      const r = parseRateLimitInput(value, { mode: "create", fieldName, allowFloat });
+      if (r.error) return { error: r.error };
+      return { value: r.value ?? null };
+    };
 
-    const parsedTpm = parseRateLimitInput(tpmLimit, {
-      mode: "create",
-      fieldName: "tpmLimit",
-    });
-    if (parsedTpm.error) {
-      return NextResponse.json({ error: parsedTpm.error }, { status: 400 });
-    }
+    const rpm = parsed("rpmLimit", rpmLimit);
+    if (rpm.error) return NextResponse.json({ error: rpm.error }, { status: 400 });
+    const tpm = parsed("tpmLimit", tpmLimit);
+    if (tpm.error) return NextResponse.json({ error: tpm.error }, { status: 400 });
+    const rpd = parsed("rpdLimit", rpdLimit);
+    if (rpd.error) return NextResponse.json({ error: rpd.error }, { status: 400 });
+    const tpd = parsed("tpdLimit", tpdLimit);
+    if (tpd.error) return NextResponse.json({ error: tpd.error }, { status: 400 });
+    const tpsP = parsed("tps", tps, true);
+    if (tpsP.error) return NextResponse.json({ error: tpsP.error }, { status: 400 });
+    const ttftP = parsed("timeToFirstTokenMs", timeToFirstTokenMs, true);
+    if (ttftP.error) return NextResponse.json({ error: ttftP.error }, { status: 400 });
+    const ctxP = parsed("contextWindow", contextWindow);
+    if (ctxP.error) return NextResponse.json({ error: ctxP.error }, { status: 400 });
+    const maxRpm = parsed("maxRpmLimit", maxRpmLimit);
+    if (maxRpm.error) return NextResponse.json({ error: maxRpm.error }, { status: 400 });
+    const maxTpm = parsed("maxTpmLimit", maxTpmLimit);
+    if (maxTpm.error) return NextResponse.json({ error: maxTpm.error }, { status: 400 });
+    const maxRpd = parsed("maxRpdLimit", maxRpdLimit);
+    if (maxRpd.error) return NextResponse.json({ error: maxRpd.error }, { status: 400 });
+    const maxTpd = parsed("maxTpdLimit", maxTpdLimit);
+    if (maxTpd.error) return NextResponse.json({ error: maxTpd.error }, { status: 400 });
 
     const apiKey = await createApiKey(id, {
       label,
       secret,
-      rpmLimit: parsedRpm.value ?? null,
-      tpmLimit: parsedTpm.value ?? null,
+      rpmLimit: rpm.value ?? null,
+      tpmLimit: tpm.value ?? null,
+      rpdLimit: rpd.value ?? null,
+      tpdLimit: tpd.value ?? null,
+      tps: tpsP.value ?? null,
+      timeToFirstTokenMs: ttftP.value ?? null,
+      contextWindow: ctxP.value ?? null,
+      cacheCapable: cacheCapable ?? true,
+      cacheDiscountFactor:
+        cacheDiscountFactor != null ? Number(cacheDiscountFactor) : 0.1,
+      autoCalibration: autoCalibration ?? false,
+      maxRpmLimit: maxRpm.value ?? null,
+      maxTpmLimit: maxTpm.value ?? null,
+      maxRpdLimit: maxRpd.value ?? null,
+      maxTpdLimit: maxTpd.value ?? null,
     });
+
+    // Optionally attach this provider-level key to a pool immediately (task 05).
+    if (poolId) {
+      await addKeyToPool(poolId, apiKey.id);
+    }
+
+    // Seed the auto-calibration baseline from the key's initial limits.
+    if (autoCalibration) {
+      await enableAutoCalibration(apiKey.id);
+    }
+
     return NextResponse.json(apiKey, { status: 201 });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

@@ -4,6 +4,7 @@ import {
   CanonicalResponse,
   CanonicalDelta,
   contentToParts,
+  normalizeProviderErrorCode,
 } from "../canonical";
 
 function generateId(): string {
@@ -29,6 +30,12 @@ export const responsesAdapter: ProviderAdapter = {
       };
       if (msg.name) entry.name = msg.name;
       if (msg.tool_call_id) entry.tool_call_id = msg.tool_call_id;
+      // CRITICAL: forward the assistant's tool_calls so the upstream model can
+      // pair them with the following `tool`-role results. Without this a tool
+      // result has no anchor and the model keeps re-issuing the same tool.
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        entry.tool_calls = msg.tool_calls;
+      }
       input.push(entry);
     }
 
@@ -212,7 +219,7 @@ export const responsesAdapter: ProviderAdapter = {
       return {
         httpStatus: statusCode,
         providerErrorMessage: raw.error?.message || raw.message || `HTTP ${statusCode}`,
-        providerErrorCode: raw.error?.code || raw.error?.type || null,
+        providerErrorCode: normalizeProviderErrorCode(raw.error?.code || raw.error?.type),
       };
     } catch {
       return {

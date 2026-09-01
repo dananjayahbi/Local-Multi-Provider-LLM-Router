@@ -11,15 +11,27 @@ import {
   Settings,
   Zap,
   BarChart3,
+  Compass,
+  Terminal,
+  Boxes,
+  MessageSquare,
+  Activity,
+  BookOpen,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/providers", label: "Providers", icon: Server },
+  { href: "/models", label: "Models", icon: Boxes },
   { href: "/pools", label: "Pools", icon: Layers },
+  { href: "/auto-calibrations", label: "Auto Calibrations", icon: Activity },
+  { href: "/discovery", label: "Discovery", icon: Compass },
+  { href: "/terminal", label: "Terminal", icon: Terminal },
   { href: "/usage", label: "Usage", icon: BarChart3 },
   { href: "/logs", label: "Logs", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/help", label: "Help", icon: BookOpen },
 ];
 
 export function Sidebar() {
