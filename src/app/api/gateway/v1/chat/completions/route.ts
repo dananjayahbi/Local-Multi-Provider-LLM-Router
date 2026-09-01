@@ -495,14 +495,18 @@ export async function POST(request: NextRequest) {
                 for (const line of lines) {
                   if (!line.trim()) continue;
                   const delta = adapter.parseStreamChunk(line);
-                  if (delta && delta.choices && delta.choices.length > 0) {
+                  // Forward any delta that carries content OR a usage-only
+                  // terminal chunk (empty choices[] + populated usage). The
+                  // usage chunk is what populates Copilot's Context Window
+                  // indicator.
+                  if (delta && (delta.usage != null || (delta.choices && delta.choices.length > 0))) {
                     emitDelta(delta);
                   }
                 }
               }
               if (buffer.trim()) {
                 const delta = adapter.parseStreamChunk(buffer);
-                if (delta && delta.choices && delta.choices.length > 0) {
+                if (delta && (delta.usage != null || (delta.choices && delta.choices.length > 0))) {
                   emitDelta(delta);
                 }
               }

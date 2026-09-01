@@ -1005,9 +1005,17 @@ async function* streamResponse(
             streamUsage.promptTokens = delta.usage.prompt_tokens ?? streamUsage.promptTokens;
             streamUsage.completionTokens = delta.usage.completion_tokens ?? streamUsage.completionTokens;
           }
-          // Check for empty choices at stream level
+          // A usage-only terminal chunk (empty choices[] + populated usage) is
+          // exactly what OpenAI sends before [DONE] when include_usage=true.
+          // VS Code's Copilot SSEProcessor reads `usage` from this chunk to
+          // update its Context Window indicator. We MUST forward it to the
+          // client (rather than skipping) — capturing it only for DB logging
+          // is what caused the indicator to stay at 0%.
           if (!delta.choices || delta.choices.length === 0) {
             skippedEmptyChoices++;
+            if (delta.usage) {
+              yield delta;
+            }
             continue;
           }
           if (delta.choices.some((c) => c.finish_reason != null)) {
@@ -1034,6 +1042,7 @@ async function* streamResponse(
         }
         if (!delta.choices || delta.choices.length === 0) {
           skippedEmptyChoices++;
+          if (delta.usage) yield delta;
         } else {
           if (delta.choices.some((c) => c.finish_reason != null)) {
             sawTerminal = true;
