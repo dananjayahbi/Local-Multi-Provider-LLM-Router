@@ -53,6 +53,11 @@ export interface ApiKeyBackup {
   maxTpmLimit: number | null;
   maxRpdLimit: number | null;
   maxTpdLimit: number | null;
+  minRpmLimit: number | null;
+  minTpmLimit: number | null;
+  minRpdLimit: number | null;
+  minTpdLimit: number | null;
+  floorHitAt: Date | null;
   status: string;
   manuallyDisabled: boolean;
   penaltyLevel: number;

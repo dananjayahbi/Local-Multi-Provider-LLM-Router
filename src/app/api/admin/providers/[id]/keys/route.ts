@@ -30,6 +30,7 @@ export async function POST(
       cacheCapable, cacheDiscountFactor,
       autoCalibration,
       maxRpmLimit, maxTpmLimit, maxRpdLimit, maxTpdLimit,
+      minRpmLimit, minTpmLimit, minRpdLimit, minTpdLimit,
     } = body;
 
     if (!label || !secret) {
@@ -71,6 +72,14 @@ export async function POST(
     if (maxRpd.error) return NextResponse.json({ error: maxRpd.error }, { status: 400 });
     const maxTpd = parsed("maxTpdLimit", maxTpdLimit);
     if (maxTpd.error) return NextResponse.json({ error: maxTpd.error }, { status: 400 });
+    const minRpm = parsed("minRpmLimit", minRpmLimit);
+    if (minRpm.error) return NextResponse.json({ error: minRpm.error }, { status: 400 });
+    const minTpm = parsed("minTpmLimit", minTpmLimit);
+    if (minTpm.error) return NextResponse.json({ error: minTpm.error }, { status: 400 });
+    const minRpd = parsed("minRpdLimit", minRpdLimit);
+    if (minRpd.error) return NextResponse.json({ error: minRpd.error }, { status: 400 });
+    const minTpd = parsed("minTpdLimit", minTpdLimit);
+    if (minTpd.error) return NextResponse.json({ error: minTpd.error }, { status: 400 });
 
     const apiKey = await createApiKey(id, {
       label,
@@ -90,6 +99,10 @@ export async function POST(
       maxTpmLimit: maxTpm.value ?? null,
       maxRpdLimit: maxRpd.value ?? null,
       maxTpdLimit: maxTpd.value ?? null,
+      minRpmLimit: minRpm.value ?? null,
+      minTpmLimit: minTpm.value ?? null,
+      minRpdLimit: minRpd.value ?? null,
+      minTpdLimit: minTpd.value ?? null,
     });
 
     // Optionally attach this provider-level key to a pool immediately (task 05).

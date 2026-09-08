@@ -23,6 +23,11 @@ export interface KeyLimitsForm {
   maxTpmLimit: string;
   maxRpdLimit: string;
   maxTpdLimit: string;
+  // Minimum cap (floor) the auto-calibrator never scales below. Empty = built-in min.
+  minRpmLimit: string;
+  minTpmLimit: string;
+  minRpdLimit: string;
+  minTpdLimit: string;
 }
 
 /** Fresh blank limits form (all numeric fields empty = unlimited). */
@@ -42,6 +47,10 @@ export function emptyKeyLimitsForm(): KeyLimitsForm {
     maxTpmLimit: "",
     maxRpdLimit: "",
     maxTpdLimit: "",
+    minRpmLimit: "",
+    minTpmLimit: "",
+    minRpdLimit: "",
+    minTpdLimit: "",
   };
 }
 
@@ -64,6 +73,10 @@ export function keyLimitsToPayload(form: KeyLimitsForm) {
     maxTpmLimit: num(form.maxTpmLimit),
     maxRpdLimit: num(form.maxRpdLimit),
     maxTpdLimit: num(form.maxTpdLimit),
+    minRpmLimit: num(form.minRpmLimit),
+    minTpmLimit: num(form.minTpmLimit),
+    minRpdLimit: num(form.minRpdLimit),
+    minTpdLimit: num(form.minTpdLimit),
   };
 }
 
@@ -83,6 +96,10 @@ export function keyLimitsFromApiKey(key: {
   maxTpmLimit?: number | null;
   maxRpdLimit?: number | null;
   maxTpdLimit?: number | null;
+  minRpmLimit?: number | null;
+  minTpmLimit?: number | null;
+  minRpdLimit?: number | null;
+  minTpdLimit?: number | null;
 }): KeyLimitsForm {
   return {
     rpmLimit: key.rpmLimit != null ? String(key.rpmLimit) : "",
@@ -99,6 +116,10 @@ export function keyLimitsFromApiKey(key: {
     maxTpmLimit: key.maxTpmLimit != null ? String(key.maxTpmLimit) : "",
     maxRpdLimit: key.maxRpdLimit != null ? String(key.maxRpdLimit) : "",
     maxTpdLimit: key.maxTpdLimit != null ? String(key.maxTpdLimit) : "",
+    minRpmLimit: key.minRpmLimit != null ? String(key.minRpmLimit) : "",
+    minTpmLimit: key.minTpmLimit != null ? String(key.minTpmLimit) : "",
+    minRpdLimit: key.minRpdLimit != null ? String(key.minRpdLimit) : "",
+    minTpdLimit: key.minTpdLimit != null ? String(key.minTpdLimit) : "",
   };
 }
 
@@ -112,7 +133,7 @@ export function KeyLimitsFields({ value, onChange }: KeyLimitsFieldsProps) {
   const set = (patch: Partial<KeyLimitsForm>) => onChange({ ...value, ...patch });
 
   const numField = (
-    key: keyof Pick<KeyLimitsForm, "rpmLimit" | "tpmLimit" | "rpdLimit" | "tpdLimit" | "timeToFirstTokenMs" | "contextWindow" | "maxRpmLimit" | "maxTpmLimit" | "maxRpdLimit" | "maxTpdLimit">,
+    key: keyof Pick<KeyLimitsForm, "rpmLimit" | "tpmLimit" | "rpdLimit" | "tpdLimit" | "timeToFirstTokenMs" | "contextWindow" | "maxRpmLimit" | "maxTpmLimit" | "maxRpdLimit" | "maxTpdLimit" | "minRpmLimit" | "minTpmLimit" | "minRpdLimit" | "minTpdLimit">,
     label: string
   ) => (
     <div className="space-y-2">
@@ -149,6 +170,24 @@ export function KeyLimitsFields({ value, onChange }: KeyLimitsFieldsProps) {
           {numField("maxTpmLimit", "Max TPM")}
           {numField("maxRpdLimit", "Max RPD")}
           {numField("maxTpdLimit", "Max TPD")}
+        </div>
+      </div>
+      {/* Minimum cap (floor) — the auto-calibrator never scales below these. */}
+      <div className="rounded-md border bg-muted/20 p-3">
+        <Label className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Minimum Cap (auto-calibration floor)
+        </Label>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Optional floors the auto-calibrator will never scale down below —
+          useful for keys whose rate limits are unpatterned. When every limit
+          is at its floor, the next throttle applies a short 1-minute penalty
+          and routing moves to the next healthy key. Empty = built-in minimum.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          {numField("minRpmLimit", "Min RPM")}
+          {numField("minTpmLimit", "Min TPM")}
+          {numField("minRpdLimit", "Min RPD")}
+          {numField("minTpdLimit", "Min TPD")}
         </div>
       </div>      <div className="grid grid-cols-3 gap-4">
         <div className="space-y-2">

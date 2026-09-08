@@ -82,6 +82,24 @@ export function KeyStateCard({ keyInfo: k, selected, onSelect }: KeyStateCardPro
         {k.tps != null && (
           <p className="text-xs text-muted-foreground">Speed: {k.tps} tokens/sec</p>
         )}
+
+        {(k.minRpmLimit != null ||
+          k.minTpmLimit != null ||
+          k.minRpdLimit != null ||
+          k.minTpdLimit != null) && (
+          <p className="text-xs text-muted-foreground">
+            Floor: RPM {limitLabel(k.minRpmLimit, "")} · TPM{" "}
+            {limitLabel(k.minTpmLimit, "")} · RPD {limitLabel(k.minRpdLimit, "")} ·
+            TPD {limitLabel(k.minTpdLimit, "")}
+          </p>
+        )}
+
+        {k.floorHitAt && (
+          <p className="text-xs font-medium text-amber-500">
+            At minimum cap — calibrator can't scale down further; throttles
+            penalize 1 min then fail over.
+          </p>
+        )}
       </CardContent>
     </Card>
   );

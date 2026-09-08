@@ -61,6 +61,25 @@ model ApiKey {
   maxRpdLimit       Int?
   maxTpdLimit       Int?
 
+  // ── minimum cap (floor) parameters ──
+  // Optional per-key floors the AUTO-CALIBRATOR will never scale a limit
+  // BELOW. For keys whose true rate limits are unpatterned (provider errors
+  // don't state a ceiling), the calibrator would otherwise shrink the limit
+  // toward the built-in minimum (RPM≥1/TPM≥500/RPD≥1/TPD≥1000), making the
+  // key nearly useless. When a `min*` floor is set, the calibrator stops at
+  // that floor. null = use the built-in minimum.
+  minRpmLimit       Int?
+  minTpmLimit       Int?
+  minRpdLimit       Int?
+  minTpdLimit       Int?
+
+  // Set (transiently, in-memory style) when the calibrator bottoms a key out
+  // at its floor: every remaining limit is already ≤ its effective floor, so
+  // further scale-downs are impossible. The orchestrator then treats the NEXT
+  // throttle on this key as "floor-exhausted" → 1-minute RPM penalty and
+  // failover to the next key.
+  floorHitAt        DateTime?
+
   status            String    @default("ACTIVE") // ACTIVE, DISABLED, PENALIZED, SUSPENDED, TESTING, COOLDOWN
   manuallyDisabled  Boolean   @default(false)
   penaltyLevel      Int       @default(0)
@@ -202,6 +221,10 @@ model AppSettings {
   penaltyMultiplier           Float @default(3)
   penaltyMaxCooldownSeconds    Int @default(21600)
   penaltyResetWindowSeconds    Int @default(3600)
+  // DEPRECATED: gateway-level compaction was pivoted to the VS Code extension;
+  // the column is kept only so existing volume databases stay in sync (its
+  // value is unused by the app).
+  compactionEnabled         Boolean @default(false)
 }
 
 // ─── ApiKey Benchmark ───────────────────────────────────

@@ -55,6 +55,15 @@ export interface AutoCalibrationKey {
   rpdLimit: number | null;
   tpdLimit: number | null;
   tps: number | null;
+  minRpmLimit: number | null;
+  minTpmLimit: number | null;
+  minRpdLimit: number | null;
+  minTpdLimit: number | null;
+  maxRpmLimit: number | null;
+  maxTpmLimit: number | null;
+  maxRpdLimit: number | null;
+  maxTpdLimit: number | null;
+  floorHitAt: string | null;
   provider: { id: string; name: string };
 }
 
