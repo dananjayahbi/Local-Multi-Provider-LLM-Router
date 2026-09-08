@@ -220,6 +220,48 @@ export async function resetPenalty(apiKeyId: string): Promise<void> {
 }
 
 /**
+ * Apply the FLOOR penalty: when the auto-calibrator has bottomed a key out at
+ * its minimum cap (every tunable limit at its floor) and the provider STILL
+ * throttles, there is nothing left to tune — penalize the key for a short
+ * 1-minute window (RPM-style) so routing fails over to the next healthy key
+ * instead of hammering a limit that keeps 429ing.
+ */
+export async function applyFloorPenalty(apiKeyId: string): Promise<HealthActionResult> {
+  const now = new Date();
+  const cooldownSeconds = 60; // 1-minute RPM-style window
+  const penaltyExpiresAt = new Date(now.getTime() + cooldownSeconds * 1000);
+
+  const key = await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: {
+      status: "PENALIZED",
+      penaltyLevel: 0,
+      penaltyExpiresAt,
+      penaltyType: "PRE_DEFINED",
+      penaltyReason: "FLOOR",
+      suspendedReason: null,
+      consecutiveFailures: { increment: 1 },
+      lastUsedAt: now,
+    },
+  });
+
+  console.error(
+    `[health] key=${apiKeyId.slice(0, 8)} FLOOR penalty — key is at its minimum cap, ` +
+      `1-minute cooldown before it re-enters rotation`
+  );
+
+  return {
+    keyId: apiKeyId,
+    newStatus: key.status,
+    penaltyLevel: key.penaltyLevel,
+    penaltyExpiresAt,
+    suspendedReason: null,
+    penaltyType: "PRE_DEFINED",
+    penaltyReason: "FLOOR",
+  };
+}
+
+/**
  * Manually apply a penalty to a key — either by escalation level (cooldown
  * derived from the variable-penalty backoff) or a custom cooldown (seconds).
  * Used by the admin UI "Penalty" button. Always sets status PENALIZED.

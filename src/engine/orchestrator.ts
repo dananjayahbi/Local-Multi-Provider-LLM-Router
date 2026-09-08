@@ -14,6 +14,7 @@ import { getAdapter } from "./adapters";
 import { ErrorClassification } from "./error-classifier";
 import {
   applyFailure,
+  applyFloorPenalty,
   resetKeyHealth,
   checkAndRecoverExpiredPenalties,
   checkAndRecoverExpiredCooldowns,
@@ -21,6 +22,8 @@ import {
 import {
   handleAutoCalibrationSuccess,
   handleAutoCalibrationFailure,
+  isKeyFloorExhausted,
+  clearKeyFloorHit,
 } from "./benchmark/auto-calibration";
 import { createRequestLog } from "./data-access/request-logs";
 import {
@@ -640,16 +643,38 @@ export async function orchestrate(
       if (!attempt.ok) {
         const { classification, providerErrorMessage, providerErrorCode, httpStatus, message } = attempt;
 
-        // Apply health action (pass the raw provider message/code so the
-        // penalty engine can detect WHICH limit was hit — RPM/TPM/RPD/TPD).
-        // Network failures that were not retriable (e.g. exhausted) also
-        // penalize. INVALID_REQUEST is never penalized.
-        await applyFailure({
-          apiKeyId: key.apiKeyId,
-          errorClassification: classification as ErrorClassification,
-          providerErrorMessage,
-          providerErrorCode,
-        });
+        // ── Floor-exhausted keys (auto-calibration minimum cap) ──
+        // When the calibrator has already bottomed this key out at its
+        // minimum cap and the provider STILL throttles, there is nothing
+        // left to tune. Skip the normal penalty decision and apply the
+        // short 1-minute FLOOR penalty so routing fails over to the next
+        // healthy key quickly instead of hammering a limit that 429s.
+        let floorPenalized = false;
+        if (classification === "RATE_LIMITED") {
+          try {
+            floorPenalized = await isKeyFloorExhausted(key.apiKeyId);
+          } catch {
+            floorPenalized = false;
+          }
+        }
+
+        if (floorPenalized) {
+          await applyFloorPenalty(key.apiKeyId);
+          // The floor stamp has served its purpose — clear it so the next
+          // throttle re-evaluates (the calibrator may probe back up later).
+          await clearKeyFloorHit(key.apiKeyId);
+        } else {
+          // Apply health action (pass the raw provider message/code so the
+          // penalty engine can detect WHICH limit was hit — RPM/TPM/RPD/TPD).
+          // Network failures that were not retriable (e.g. exhausted) also
+          // penalize. INVALID_REQUEST is never penalized.
+          await applyFailure({
+            apiKeyId: key.apiKeyId,
+            errorClassification: classification as ErrorClassification,
+            providerErrorMessage,
+            providerErrorCode,
+          });
+        }
 
         // ── Multi-session: release any session lock on this key ──
         // The key just got penalized (or is otherwise unusable), so it must not
@@ -661,7 +686,9 @@ export async function orchestrate(
 
         // Auto-calibration: scale this key's limits down on a throttle hit so
         // it stops tripping penalties and finds the real sustainable ceiling.
-        if (classification === "RATE_LIMITED") {
+        // (Skipped when the key is floor-exhausted — applyFloorPenalty above
+        // already handled it and there is nothing left to scale.)
+        if (classification === "RATE_LIMITED" && !floorPenalized) {
           const newLimits = await handleAutoCalibrationFailure(
             key.apiKeyId,
             classification,
@@ -672,6 +699,19 @@ export async function orchestrate(
               `[auto-cal] key=${key.apiKeyId.slice(0, 8)} rate-limited, scaled limits down → ` +
                 `rpm=${newLimits.rpmLimit ?? "∞"} tpm=${newLimits.tpmLimit ?? "∞"}`
             );
+          } else {
+            // No shrink happened. If the calibrator just stamped the key as
+            // at-floor, the NEXT throttle takes the 1-minute FLOOR penalty.
+            try {
+              if (await isKeyFloorExhausted(key.apiKeyId)) {
+                console.error(
+                  `[auto-cal] key=${key.apiKeyId.slice(0, 8)} hit its minimum cap — ` +
+                    `next throttle → 1-min FLOOR penalty + failover`
+                );
+              }
+            } catch {
+              // ignore
+            }
           }
         }
 

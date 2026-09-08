@@ -29,6 +29,10 @@ export interface RateLimitKey {
   maxTpmLimit?: number | null;
   maxRpdLimit?: number | null;
   maxTpdLimit?: number | null;
+  minRpmLimit?: number | null;
+  minTpmLimit?: number | null;
+  minRpdLimit?: number | null;
+  minTpdLimit?: number | null;
 }
 
 interface Props {
@@ -37,7 +41,7 @@ interface Props {
   onSaved: () => void;
 }
 
-const EMPTY = { rpmLimit: "", tpmLimit: "", rpdLimit: "", tpdLimit: "", tps: "", timeToFirstTokenMs: "", contextWindow: "", autoCalibration: false, maxRpmLimit: "", maxTpmLimit: "", maxRpdLimit: "", maxTpdLimit: "" };
+const EMPTY = { rpmLimit: "", tpmLimit: "", rpdLimit: "", tpdLimit: "", tps: "", timeToFirstTokenMs: "", contextWindow: "", autoCalibration: false, maxRpmLimit: "", maxTpmLimit: "", maxRpdLimit: "", maxTpdLimit: "", minRpmLimit: "", minTpmLimit: "", minRpdLimit: "", minTpdLimit: "" };
 
 const fmt = (v: number | null) => (v != null ? String(v) : "");
 
@@ -62,6 +66,10 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
         maxTpmLimit: fmt(keyData.maxTpmLimit ?? null),
         maxRpdLimit: fmt(keyData.maxRpdLimit ?? null),
         maxTpdLimit: fmt(keyData.maxTpdLimit ?? null),
+        minRpmLimit: fmt(keyData.minRpmLimit ?? null),
+        minTpmLimit: fmt(keyData.minTpmLimit ?? null),
+        minRpdLimit: fmt(keyData.minRpdLimit ?? null),
+        minTpdLimit: fmt(keyData.minTpdLimit ?? null),
       });
     }
   }, [keyData]);
@@ -86,6 +94,10 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
           maxTpmLimit: form.maxTpmLimit ? Number(form.maxTpmLimit) : null,
           maxRpdLimit: form.maxRpdLimit ? Number(form.maxRpdLimit) : null,
           maxTpdLimit: form.maxTpdLimit ? Number(form.maxTpdLimit) : null,
+          minRpmLimit: form.minRpmLimit ? Number(form.minRpmLimit) : null,
+          minTpmLimit: form.minTpmLimit ? Number(form.minTpmLimit) : null,
+          minRpdLimit: form.minRpdLimit ? Number(form.minRpdLimit) : null,
+          minTpdLimit: form.minTpdLimit ? Number(form.minTpdLimit) : null,
         }),
       });
       if (res.ok) {
@@ -156,6 +168,36 @@ export function KeyLimitsDialog({ keyData, onOpenChange, onSaved }: Props) {
                 <Label className="text-xs">{label}</Label>
                 <Input
                   placeholder="no cap"
+                  value={form[field]}
+                  onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Minimum cap (floor) — the auto-calibrator never scales below these. */}
+        <div className="rounded-md border bg-muted/20 p-3">
+          <Label className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Minimum Cap (auto-calibration floor)
+          </Label>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Optional floors the auto-calibrator will never scale down below.
+            Leave blank for the built-in minimum.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            {(
+              [
+                ["minRpmLimit", "Min RPM"],
+                ["minTpmLimit", "Min TPM"],
+                ["minRpdLimit", "Min RPD"],
+                ["minTpdLimit", "Min TPD"],
+              ] as const
+            ).map(([field, label]) => (
+              <div key={field} className="space-y-1">
+                <Label className="text-xs">{label}</Label>
+                <Input
+                  placeholder="no floor"
                   value={form[field]}
                   onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
                 />

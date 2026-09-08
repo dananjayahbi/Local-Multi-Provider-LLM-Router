@@ -90,7 +90,7 @@ void (async () => {
   assert(recoveryWaitMaxMs() === 0, "env '0' → disabled (0)");
 
   process.env.RECOVERY_WAIT_MAX_SECONDS = "999999";
-  assert(recoveryWaitMaxMs() === 290_000, "huge env → capped at 290s (just under 5-min maxDuration)");
+  assert(recoveryWaitMaxMs() === 600_000, "huge env → capped at 600s (10-min hold policy)");
 
   process.env.RECOVERY_WAIT_MAX_SECONDS = "not-a-number";
   assert(recoveryWaitMaxMs() === 0, "invalid env → disabled (0)");

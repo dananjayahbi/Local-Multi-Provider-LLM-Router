@@ -13,18 +13,28 @@
 
 /**
  * Minimum remaining penalty (ms) before a fully-exhausted pool emits the
- * "pool exhausted" completion instead of continuing to wait. Default 30 min.
- * Overridable via EXHAUSTED_MIN_PENALTY_MS (seconds).
+ * "pool exhausted" completion instead of continuing to wait. Default 10 min
+ * (600s): when every pending penalty is BELOW this threshold the request is
+ * held in the queue until a key recovers. Overridable via
+ * EXHAUSTED_MIN_PENALTY_SECONDS (seconds). The legacy
+ * EXHAUSTED_MIN_PENALTY_MS name is still accepted for backward compatibility.
  */
-export const DEFAULT_EXHAUSTED_MIN_PENALTY_MS = 30 * 60 * 1000; // 30 minutes
+export const DEFAULT_EXHAUSTED_MIN_PENALTY_MS = 10 * 60 * 1000; // 10 minutes
 
 /** Resolve the configured minimum penalty threshold (ms). */
 export function exhaustedMinPenaltyMs(): number {
-  const raw = process.env.EXHAUSTED_MIN_PENALTY_MS;
-  if (raw == null || raw.trim() === "") return DEFAULT_EXHAUSTED_MIN_PENALTY_MS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_EXHAUSTED_MIN_PENALTY_MS;
-  return parsed * 1000;
+  const secondsRaw = process.env.EXHAUSTED_MIN_PENALTY_SECONDS;
+  if (secondsRaw != null && secondsRaw.trim() !== "") {
+    const parsed = Number.parseInt(secondsRaw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed * 1000;
+  }
+  // Legacy fallback (ms-based name) for older deployments.
+  const msRaw = process.env.EXHAUSTED_MIN_PENALTY_MS;
+  if (msRaw != null && msRaw.trim() !== "") {
+    const parsedMs = Number.parseInt(msRaw, 10);
+    if (Number.isFinite(parsedMs) && parsedMs > 0) return parsedMs;
+  }
+  return DEFAULT_EXHAUSTED_MIN_PENALTY_MS;
 }
 
 export interface PoolKeyPenaltyInfo {

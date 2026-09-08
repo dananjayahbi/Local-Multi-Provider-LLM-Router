@@ -15,15 +15,16 @@ import {
   checkAndRecoverExpiredCooldowns,
 } from "@/engine/health-engine";
 
-/** Default max time to hold a request waiting for a key to recover. */
-export const DEFAULT_RECOVERY_WAIT_MS = 290_000; // 4m50s (kept just under the 5-min route maxDuration)
+/** Default max time to hold a request waiting for a key to recover. 10 min —
+ *  matches the exhausted-pool policy threshold: any penalty BELOW 10 minutes
+ *  is waited out in-queue, so the hold budget must cover the full window. */
+export const DEFAULT_RECOVERY_WAIT_MS = 600_000; // 10 min
 /** How often the recovery loop re-checks the DB. */
 export const RECOVERY_POLL_MS = 2_000;
-/** Hard ceiling so a misconfigured env can't cause a multi-hour hang. Kept under
- *  the gateway route's maxDuration (300s) so the wait completes before the
- *  function is cut off. Raising this lets a SHORT penalty (under the exhausted
- *  threshold) recover in-place instead of forcing the exhausted completion. */
-const MAX_RECOVERY_WAIT_MS = 290_000; // 4m50s
+/** Hard ceiling so a misconfigured env can't cause a multi-hour hang. The app
+ *  runs self-hosted in Docker (no serverless maxDuration cutoff), so this can
+ *  safely cover the full 10-minute hold policy. */
+const MAX_RECOVERY_WAIT_MS = 600_000; // 10 min
 
 /** Resolve the configured max wait (ms). 0 disables waiting entirely. */
 export function recoveryWaitMaxMs(): number {

@@ -43,6 +43,18 @@ export interface HardCapLimits {
   maxTpdLimit: number | null;
 }
 
+/** Per-key minimum cap (floor). The auto-calibrator NEVER scales a limit
+ *  BELOW the matching `min*` value. For keys with unpatterned rate limits
+ *  (provider 429s that never state a ceiling), the calibrator would otherwise
+ *  shrink the limit to the built-in minimum, making the key nearly useless.
+ *  null = use the built-in minimum (MIN_RPM / MIN_TPM / MIN_RPD / MIN_TPD). */
+export interface MinCapLimits {
+  minRpmLimit: number | null;
+  minTpmLimit: number | null;
+  minRpdLimit: number | null;
+  minTpdLimit: number | null;
+}
+
 export interface AutoCalibrationState {
   /** The user's claimed ceiling captured when auto-calibration was enabled
    *  (or the last time it was manually reset). Never exceeded. */
@@ -137,22 +149,37 @@ export async function seedLimitsOnFirstThrottle(
 
   const baseline: AutoCalibrationLimits = { ...EMPTY_LIMITS };
   const next: AutoCalibrationLimits = { ...EMPTY_LIMITS };
+  // Respect the key's min caps (floors) when seeding so the seeded current
+  // limit never lands below the user's minimum.
+  const minCap = readMinCap(key);
   switch (detected) {
     case "RPM":
       baseline.rpmLimit = ceiling;
-      next.rpmLimit = scaleDown(ceiling, MIN_RPM);
+      next.rpmLimit = Math.max(
+        effectiveFloor(minCap.minRpmLimit, MIN_RPM),
+        scaleDownCeiling(ceiling, MIN_RPM)
+      );
       break;
     case "TPM":
       baseline.tpmLimit = ceiling;
-      next.tpmLimit = scaleDown(ceiling, MIN_TPM);
+      next.tpmLimit = Math.max(
+        effectiveFloor(minCap.minTpmLimit, MIN_TPM),
+        scaleDownCeiling(ceiling, MIN_TPM)
+      );
       break;
     case "RPD":
       baseline.rpdLimit = ceiling;
-      next.rpdLimit = scaleDown(ceiling, MIN_RPD);
+      next.rpdLimit = Math.max(
+        effectiveFloor(minCap.minRpdLimit, MIN_RPD),
+        scaleDownCeiling(ceiling, MIN_RPD)
+      );
       break;
     case "TPD":
       baseline.tpdLimit = ceiling;
-      next.tpdLimit = scaleDown(ceiling, MIN_TPD);
+      next.tpdLimit = Math.max(
+        effectiveFloor(minCap.minTpdLimit, MIN_TPD),
+        scaleDownCeiling(ceiling, MIN_TPD)
+      );
       break;
   }
 
@@ -229,6 +256,48 @@ async function updateKeyLimits(
   await prisma.apiKey.update({ where: { id: apiKeyId }, data });
 }
 
+// ─── Floor-exhausted stamping ─────────────────────────
+// When the calibrator bottoms a key out at its minimum cap, we stamp
+// `floorHitAt` on the key. The orchestrator checks this stamp on the NEXT
+// throttle: instead of another scale-down no-op + full penalty, it applies a
+// SHORT 1-minute RPM penalty and moves to the next healthy key. Any
+// successful scale-down/up or manual limit edit clears the stamp.
+
+async function stampFloorHit(apiKeyId: string): Promise<void> {
+  await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: { floorHitAt: new Date() },
+  });
+}
+
+async function clearFloorHit(apiKeyId: string): Promise<void> {
+  await prisma.apiKey.update({
+    where: { id: apiKeyId },
+    data: { floorHitAt: null },
+  });
+}
+
+/**
+ * Whether the key is floor-exhausted: auto-calibration is on, the calibrator
+ * has stamped `floorHitAt` (every tunable limit is at its minimum cap), and
+ * the stamp is still fresh (the key hasn't been re-tuned since). Used by the
+ * orchestrator to decide between "scale down again" and "penalize briefly +
+ * fail over".
+ */
+export async function isKeyFloorExhausted(apiKeyId: string): Promise<boolean> {
+  const key = await prisma.apiKey.findUnique({
+    where: { id: apiKeyId },
+    select: { autoCalibration: true, floorHitAt: true },
+  });
+  return Boolean(key?.autoCalibration && key.floorHitAt);
+}
+
+/** Clear the floor-hit stamp (e.g. after the orchestrator penalizes the key
+ *  for being floor-exhausted, or the user edits limits manually). */
+export async function clearKeyFloorHit(apiKeyId: string): Promise<void> {
+  await clearFloorHit(apiKeyId);
+}
+
 function currentLimits(key: {
   rpmLimit: number | null;
   tpmLimit: number | null;
@@ -255,10 +324,73 @@ function readHardCap(key: Record<string, unknown>): HardCapLimits {
   };
 }
 
+/** Read the per-key minimum cap (floor) from the ApiKey record. */
+function readMinCap(key: Record<string, unknown>): MinCapLimits {
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && v > 0 ? v : v == null ? null : Number(v) > 0 ? Number(v) : null;
+  return {
+    minRpmLimit: num(key.minRpmLimit),
+    minTpmLimit: num(key.minTpmLimit),
+    minRpdLimit: num(key.minRpdLimit),
+    minTpdLimit: num(key.minTpdLimit),
+  };
+}
+
+/** The effective floor for one limit: the user's min cap when set, else the
+ *  built-in minimum. */
+function effectiveFloor(minCap: number | null, builtin: number): number {
+  return minCap != null && minCap > 0 ? minCap : builtin;
+}
+
 /** Multiply a single limit down, respecting a floor and never below 1. */
 function scaleDown(value: number | null, floor: number): number | null {
   if (value == null || value <= 0) return value; // unlimited stays unlimited
   return Math.max(floor, Math.round(value * DECREASE_FACTOR));
+}
+
+/** Scale a KNOWN-positive ceiling down (seeding path) — never returns null. */
+function scaleDownCeiling(ceiling: number, floor: number): number {
+  return Math.max(floor, Math.round(ceiling * DECREASE_FACTOR));
+}
+
+/**
+ * Whether a single limit is already AT (or below) its effective floor — i.e.
+ * the calibrator cannot shrink it any further. Unlimited (null) limits are
+ * never floor-bound (they aren't being tuned).
+ */
+function isAtFloor(value: number | null, floor: number): boolean {
+  return value != null && value > 0 && value <= floor;
+}
+
+/**
+ * Detect whether EVERY tunable limit on the key is already at its effective
+ * floor (user min cap when set, else the built-in minimum). When true, the
+ * calibrator can no longer scale down — the key is "floor-exhausted" and the
+ * orchestrator should penalize it briefly (1-min RPM) and fail over instead
+ * of hammering the provider at a limit that keeps tripping 429s.
+ */
+export function isKeyAtFloor(
+  limits: AutoCalibrationLimits,
+  minCap: MinCapLimits
+): boolean {
+  const rpmFloor = effectiveFloor(minCap.minRpmLimit, MIN_RPM);
+  const tpmFloor = effectiveFloor(minCap.minTpmLimit, MIN_TPM);
+  const rpdFloor = effectiveFloor(minCap.minRpdLimit, MIN_RPD);
+  const tpdFloor = effectiveFloor(minCap.minTpdLimit, MIN_TPD);
+
+  // A limit counts as "tunable" only when it is set (non-null). Unlimited
+  // limits are ignored — they are not being scaled by AIMD.
+  const tunable = [
+    { value: limits.rpmLimit, floor: rpmFloor },
+    { value: limits.tpmLimit, floor: tpmFloor },
+    { value: limits.rpdLimit, floor: rpdFloor },
+    { value: limits.tpdLimit, floor: tpdFloor },
+  ].filter((l) => l.value != null);
+
+  // No limits set at all → nothing is floor-bound (the seeding path owns this).
+  if (tunable.length === 0) return false;
+
+  return tunable.every((l) => isAtFloor(l.value as number, l.floor));
 }
 
 /** Multiply up toward the baseline ceiling — never exceeds baseline and NEVER
@@ -361,15 +493,40 @@ export async function handleAutoCalibrationFailure(
   }
 
   const current = currentLimits(key);
+  const minCap = readMinCap(key);
   const next: AutoCalibrationLimits = {
-    rpmLimit: scaleDown(current.rpmLimit, MIN_RPM),
-    tpmLimit: scaleDown(current.tpmLimit, MIN_TPM),
-    rpdLimit: scaleDown(current.rpdLimit, MIN_RPD),
-    tpdLimit: scaleDown(current.tpdLimit, MIN_TPD),
+    rpmLimit: scaleDown(current.rpmLimit, effectiveFloor(minCap.minRpmLimit, MIN_RPM)),
+    tpmLimit: scaleDown(current.tpmLimit, effectiveFloor(minCap.minTpmLimit, MIN_TPM)),
+    rpdLimit: scaleDown(current.rpdLimit, effectiveFloor(minCap.minRpdLimit, MIN_RPD)),
+    tpdLimit: scaleDown(current.tpdLimit, effectiveFloor(minCap.minTpdLimit, MIN_TPD)),
   };
 
   // Avoid infinite writes when nothing can actually shrink.
-  if (JSON.stringify(next) === JSON.stringify(current)) return null;
+  if (JSON.stringify(next) === JSON.stringify(current)) {
+    // Every limit is already at its effective floor (user min cap or built-in
+    // minimum) — the calibrator cannot shrink further. Stamp `floorHitAt` so
+    // the orchestrator treats the NEXT throttle on this key as
+    // "floor-exhausted": a short 1-minute RPM penalty + failover to the next
+    // healthy key, instead of repeatedly hammering a limit that keeps 429ing.
+    if (isKeyAtFloor(current, minCap)) {
+      await stampFloorHit(apiKeyId);
+      await createAutoCalibrationEvent({
+        apiKeyId,
+        kind: "SCALE_DOWN",
+        limit: "RPM",
+        message: "Key is at its minimum cap — calibrator cannot scale down further",
+        detail: { classification, floorHit: true, before: current, after: next },
+      });
+      console.error(
+        `[auto-cal] key=${apiKeyId.slice(0, 8)} at MINIMUM cap — floor-exhausted ` +
+          `(next throttle → 1-min RPM penalty + failover)`
+      );
+    }
+    return null;
+  }
+
+  // The key just shrank — clear any stale floor-hit stamp.
+  await clearFloorHit(apiKeyId);
 
   state.consecutiveSuccesses = 0;
   state.lastAdjustmentAt = Date.now();
@@ -441,6 +598,9 @@ export async function handleAutoCalibrationSuccess(
   await writeAutoCalibrationState(apiKeyId, state);
   await updateKeyLimits(apiKeyId, next);
 
+  // The key recovered capacity — it is no longer floor-exhausted.
+  await clearFloorHit(apiKeyId);
+
   await createAutoCalibrationEvent({
     apiKeyId,
     kind: "SCALE_UP",
@@ -467,6 +627,8 @@ export async function resetAutoCalibrationBaseline(
     lastAdjustmentAt: null,
   };
   await writeAutoCalibrationState(apiKeyId, state);
+  // Manual re-tune clears the floor-exhausted stamp.
+  await clearFloorHit(apiKeyId);
 
   await createAutoCalibrationEvent({
     apiKeyId,

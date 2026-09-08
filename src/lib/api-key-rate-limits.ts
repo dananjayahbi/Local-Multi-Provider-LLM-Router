@@ -11,7 +11,11 @@ export type RateLimitFieldName =
   | "maxRpmLimit"
   | "maxTpmLimit"
   | "maxRpdLimit"
-  | "maxTpdLimit";
+  | "maxTpdLimit"
+  | "minRpmLimit"
+  | "minTpmLimit"
+  | "minRpdLimit"
+  | "minTpdLimit";
 
 interface ParseRateLimitOptions {
   mode: ParseMode;

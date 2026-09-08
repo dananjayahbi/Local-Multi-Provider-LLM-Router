@@ -26,6 +26,12 @@ export interface ApiKeyInput {
   maxTpmLimit?: number | null;
   maxRpdLimit?: number | null;
   maxTpdLimit?: number | null;
+  // Minimum cap (floor) the auto-calibrator will never scale below. null =
+  // built-in minimum (RPM≥1/TPM≥500/RPD≥1/TPD≥1000).
+  minRpmLimit?: number | null;
+  minTpmLimit?: number | null;
+  minRpdLimit?: number | null;
+  minTpdLimit?: number | null;
 }
 
 export async function getKeysByProvider(providerId: string) {
@@ -94,6 +100,10 @@ export async function createApiKey(
       maxTpmLimit: data.maxTpmLimit ?? null,
       maxRpdLimit: data.maxRpdLimit ?? null,
       maxTpdLimit: data.maxTpdLimit ?? null,
+      minRpmLimit: data.minRpmLimit ?? null,
+      minTpmLimit: data.minTpmLimit ?? null,
+      minRpdLimit: data.minRpdLimit ?? null,
+      minTpdLimit: data.minTpdLimit ?? null,
     },
   });
 }
@@ -116,6 +126,10 @@ export async function updateApiKey(id: string, data: Partial<ApiKeyInput>) {
   if (data.maxTpmLimit !== undefined) updateData.maxTpmLimit = data.maxTpmLimit;
   if (data.maxRpdLimit !== undefined) updateData.maxRpdLimit = data.maxRpdLimit;
   if (data.maxTpdLimit !== undefined) updateData.maxTpdLimit = data.maxTpdLimit;
+  if (data.minRpmLimit !== undefined) updateData.minRpmLimit = data.minRpmLimit;
+  if (data.minTpmLimit !== undefined) updateData.minTpmLimit = data.minTpmLimit;
+  if (data.minRpdLimit !== undefined) updateData.minRpdLimit = data.minRpdLimit;
+  if (data.minTpdLimit !== undefined) updateData.minTpdLimit = data.minTpdLimit;
   return prisma.apiKey.update({ where: { id }, data: updateData });
 }
 
