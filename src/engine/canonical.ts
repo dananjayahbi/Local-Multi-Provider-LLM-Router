@@ -170,7 +170,11 @@ export function normalizeContent(content: string | ContentPart[]): string {
     .join("\n");
 }
 
-export function contentToParts(content: string | ContentPart[]): ContentPart[] {
+export function contentToParts(content: string | ContentPart[] | null | undefined): ContentPart[] {
+  // Assistant tool-call turns legitimately carry `content: null`. Without this
+  // guard the Anthropic/Responses adapters crashed on `.map` for exactly the
+  // tool-call turn we must forward.
+  if (content == null) return [];
   if (typeof content === "string") return [{ type: "text", text: content }];
   return content;
 }

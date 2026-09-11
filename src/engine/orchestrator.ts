@@ -11,6 +11,7 @@ import {
   CanonicalDelta,
 } from "./canonical";
 import { getAdapter } from "./adapters";
+import { deltaHasToolCalls, resolveFinishReason } from "./adapters/stream-helpers";
 import { ErrorClassification } from "./error-classifier";
 import {
   applyFailure,
@@ -30,6 +31,7 @@ import {
   waitForApiKeyRateLimit,
   settleApiKeyRateLimit,
   releaseApiKeyRateLimit,
+  maxPreDispatchWaitMs,
   ApiKeyRateLimitReservation,
 } from "./rate-limit/api-key-rate-limiter";
 import { recordFlowEvent } from "./rate-limit/flow-tracker";
@@ -83,6 +85,11 @@ import {
   MAX_ATTEMPTS,
 } from "./routing/retry-backoff";
 import { performKeyAttemptWithRetry } from "./routing/attempt";
+import { fireAndForget } from "@/lib/async";
+import {
+  ClientCapabilities,
+  defaultCapabilities,
+} from "./clients/client-profile";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -213,6 +220,12 @@ export interface OrchestrateOptions {
   /** Prior per-attempt errors accumulated before a recovery-retry. */
   priorErrors?: AttemptError[];
   /**
+   * Resolved client capabilities (Copilot vs universal). Governs fidelity
+   * behaviour only — never routing or key selection. Defaults to the safe
+   * Copilot profile when omitted.
+   */
+  capabilities?: ClientCapabilities;
+  /**
    * Absolute deadline (epoch ms) for the WHOLE recovery-retry budget. Set on
    * the first attempt; the recursive retry carries it forward so that if a key
    * keeps getting re-penalized we never wait longer than the route budget.
@@ -225,9 +238,17 @@ export async function orchestrate(
   resolvedPool: ResolvedPool,
   opts: OrchestrateOptions = {}
 ): Promise<OrchestratorResult> {
-  // Recover any expired penalties and cooldowns first
-  await checkAndRecoverExpiredPenalties();
-  await checkAndRecoverExpiredCooldowns();
+  // Resolve client capabilities once for this request (fidelity only).
+  const caps = opts.capabilities ?? defaultCapabilities();
+
+  // Recover any expired penalties and cooldowns. This previously AWAITED two
+  // unconditional SQLite `updateMany` writes on EVERY request — pure TTFT cost,
+  // duplicating the background recovery loop started at boot
+  // (src/instrumentation.ts). Run it fire-and-forget so a slightly stale key
+  // state is harmless (the selector skips unhealthy keys anyway) but the
+  // request never blocks on the file-locked write.
+  fireAndForget(checkAndRecoverExpiredPenalties(), "recoverPenalties");
+  fireAndForget(checkAndRecoverExpiredCooldowns(), "recoverCooldowns");
 
   // Synthetic pools (admin Chat) may not correspond to a real Pool row; use
   // their override so RequestLog.poolId stays null (usage still aggregates).
@@ -330,6 +351,7 @@ export async function orchestrate(
           requestId,
           priorErrors: errors,
           deadline: recoveryDeadline,
+          capabilities: caps,
         });
       }
       // Timed out — fall through to the exhausted-pool response.
@@ -555,12 +577,30 @@ export async function orchestrate(
           stage: "queued",
         });
 
-        reservation = await waitForApiKeyRateLimit({
+        const granted = await waitForApiKeyRateLimit({
           apiKeyId: key.apiKeyId,
           rpmLimit: key.rpmLimit,
           tpmLimit: key.tpmLimit,
           requestedTokens: estimatedTokens,
+          // Never hold the request for a full window — fail over instead.
+          maxWaitMs: maxPreDispatchWaitMs(),
         });
+
+        if (!granted) {
+          // Capacity would take too long to free. Skip this key so routing
+          // fails over to another candidate rather than stalling the request.
+          recordFlowEvent({
+            requestId,
+            poolId: resolvedPool.id,
+            apiKeyId: key.apiKeyId,
+            poolName: resolvedPool.name,
+            apiKeyLabel: key.apiKeyLabel,
+            providerName: member.providerName,
+            stage: "failed",
+          });
+          continue;
+        }
+        reservation = granted;
 
         // Capacity granted — the upstream call is now in flight.
         recordFlowEvent({
@@ -596,7 +636,13 @@ export async function orchestrate(
       // as an array, so we strip tools for models flagged `reliableToolCalls:
       // false`. This is the proactive fix (no wasted round-trip).
       const adapter = getAdapter(member.apiFormat);
-      const requestForModel = member.reliableToolCalls === false ? withoutTools(canonicalRequest) : canonicalRequest;
+      // Some free reasoning models return an EMPTY completion when `tools` is
+      // sent as an array, so we strip tools for models flagged
+      // `reliableToolCalls:false`. Universal (agentic) clients depend on their
+      // tools, so we never strip them there — a missing tool is far worse than
+      // one empty turn, which the empty-completion detector handles.
+      const stripTools = member.reliableToolCalls === false && !caps.neverStripTools;
+      const requestForModel = stripTools ? withoutTools(canonicalRequest) : canonicalRequest;
       const { url, headers, body } = adapter.buildRequest(
         requestForModel,
         decryptedKey,
@@ -769,12 +815,14 @@ export async function orchestrate(
 
       const response = attempt.response!;
 
-      // Success!
-      await resetKeyHealth(key.apiKeyId);
-
-      // Auto-calibration: a success advances the streak; at the threshold we
-      // cautiously probe limits up toward the user's baseline ceiling.
-      await handleAutoCalibrationSuccess(key.apiKeyId);
+      // Success! Apply health reset + auto-calibration OFF the hot path.
+      // These were awaited BETWEEN upstream success and returning the stream,
+      // so the client waited on two SQLite writes before the first byte (a
+      // multi-second TTFT stall). Both are idempotent health-state writes whose
+      // ordering relative to the client response does not matter; the boot
+      // recovery loop reconciles any staleness.
+      fireAndForget(resetKeyHealth(key.apiKeyId), "resetKeyHealth");
+      fireAndForget(handleAutoCalibrationSuccess(key.apiKeyId), "autoCalibrationSuccess");
 
       // ── Conversation affinity (cache stickiness) ─────
       // Remember this key as the conversation's current key so the next
@@ -967,6 +1015,7 @@ export async function orchestrate(
         requestId,
         priorErrors: errors,
         deadline: recoveryDeadline,
+        capabilities: caps,
       });
     }
     // Timed out — fall through to the exhausted completion.
@@ -1019,6 +1068,7 @@ async function* streamResponse(
   let deltaCount = 0;
   let skippedEmptyChoices = 0;
   let sawTerminal = false;
+  let sawToolCalls = false; // any delta carrying a tool_call
   let producedContent = false; // any delta with usable content / reasoning / tool_calls
   const streamUsage: { promptTokens?: number; completionTokens?: number } = {};
 
@@ -1061,6 +1111,9 @@ async function* streamResponse(
           if (delta.choices.some((c) => c.finish_reason != null)) {
             sawTerminal = true;
           }
+          if (deltaHasToolCalls(delta)) {
+            sawToolCalls = true;
+          }
           if (delta.choices.some((c) => hasUsableDelta(c))) {
             producedContent = true;
           }
@@ -1087,6 +1140,9 @@ async function* streamResponse(
           if (delta.choices.some((c) => c.finish_reason != null)) {
             sawTerminal = true;
           }
+          if (deltaHasToolCalls(delta)) {
+            sawToolCalls = true;
+          }
           if (delta.choices.some((c) => hasUsableDelta(c))) {
             producedContent = true;
           }
@@ -1098,11 +1154,15 @@ async function* streamResponse(
 
     // Guarantee a terminal finish_reason chunk even if the upstream provider
     // ended with just `data: [DONE]` and never emitted an explicit stop reason.
+    // CRITICAL: if the turn actually produced tool calls, the synthetic reason
+    // MUST be `tool_calls` — reporting "stop" here made agents believe no tool
+    // was requested, so they re-planned instead of executing (a loop).
     if (!sawTerminal) {
+      const reason = resolveFinishReason(sawToolCalls, undefined);
       console.error(
-        `[stream] provider never emitted finish_reason — injecting synthetic terminal for key=${meta.apiKeyId.slice(0, 8)}`
+        `[stream] provider never emitted finish_reason — injecting synthetic terminal (${reason}) for key=${meta.apiKeyId.slice(0, 8)}`
       );
-      yield { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+      yield { choices: [{ index: 0, delta: {}, finish_reason: reason }] };
     }
 
     console.error(`[stream] done: deltas=${deltaCount} skipped_empty=${skippedEmptyChoices} key=${meta.apiKeyId.slice(0, 8)}`);
@@ -1140,22 +1200,29 @@ async function* streamResponse(
       tokens: actualTotal ?? undefined,
     });
 
-    await createRequestLog({
-      poolId: meta.poolId,
-      apiKeyId: meta.apiKeyId,
-      providerModelId: meta.providerModelId,
-      tier: meta.tier,
-      outcome,
-      httpStatus: meta.httpStatus,
-      latencyMs: Date.now() - meta.startTime,
-      promptTokens: streamUsage.promptTokens ?? null,
-      completionTokens: streamUsage.completionTokens ?? null,
-      requestedVirtualModel: meta.virtualModel,
-      // An empty response is a gateway-side condition: the provider returned
-      // HTTP 200 but nothing usable. Surface it as the gateway error message.
-      ...(outcome === "EMPTY_RESPONSE"
-        ? { gatewayErrorMessage: "Provider finished stream with no usable content/reasoning/tool-calls." }
-        : {}),
-    });
+    // The log write runs in the generator's `finally`, i.e. AFTER the stream
+    // has fully drained to the client — so it never delays the response. Keep
+    // it fire-and-forget so a slow SQLite write cannot hold the already-finished
+    // request open.
+    fireAndForget(
+      createRequestLog({
+        poolId: meta.poolId,
+        apiKeyId: meta.apiKeyId,
+        providerModelId: meta.providerModelId,
+        tier: meta.tier,
+        outcome,
+        httpStatus: meta.httpStatus,
+        latencyMs: Date.now() - meta.startTime,
+        promptTokens: streamUsage.promptTokens ?? null,
+        completionTokens: streamUsage.completionTokens ?? null,
+        requestedVirtualModel: meta.virtualModel,
+        // An empty response is a gateway-side condition: the provider returned
+        // HTTP 200 but nothing usable. Surface it as the gateway error message.
+        ...(outcome === "EMPTY_RESPONSE"
+          ? { gatewayErrorMessage: "Provider finished stream with no usable content/reasoning/tool-calls." }
+          : {}),
+      }),
+      "streamRequestLog"
+    );
   }
 }

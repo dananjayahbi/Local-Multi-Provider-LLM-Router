@@ -39,16 +39,11 @@ export async function updateAppSettings(data: {
   });
 }
 
-export async function initializeAppSettings(): Promise<{
-  id: string;
-  unifiedGatewayKeyHash: string;
-  unifiedGatewayKeyPrefix: string;
-  penaltyBaseCooldownSeconds: number;
-  penaltyMultiplier: number;
-  penaltyMaxCooldownSeconds: number;
-  penaltyResetWindowSeconds: number;
-  plaintextKey: string;
-}> {
+// Return type is inferred as `AppSettings & { plaintextKey: string }` so it
+// always stays in sync with the Prisma model (a hand-written annotation went
+// stale when the deprecated `compactionEnabled` column existed in the schema
+// but not in the annotation, breaking assignment + null-narrowing downstream).
+export async function initializeAppSettings() {
   const existing = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
   if (existing) {
     return { ...existing, plaintextKey: "" };

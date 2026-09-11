@@ -66,6 +66,7 @@ export const responsesAdapter: ProviderAdapter = {
     const output = raw.output || [];
 
     let textContent: string | null = "";
+    let reasoningText: string | null = null;
     const toolCalls: CanonicalResponse["choices"][0]["message"]["tool_calls"] = [];
 
     for (const item of output) {
@@ -75,10 +76,20 @@ export const responsesAdapter: ProviderAdapter = {
           for (const block of msgContent) {
             if (block.type === "output_text") {
               textContent += block.text;
+            } else if (block.type === "reasoning_text" || block.type === "summary_text") {
+              reasoningText = (reasoningText || "") + (block.text ?? "");
             }
           }
         } else if (typeof msgContent === "string") {
           textContent += msgContent;
+        }
+      } else if (item.type === "reasoning") {
+        // Preserve the Responses API reasoning item as reasoning text.
+        const summary = item.summary;
+        if (Array.isArray(summary)) {
+          for (const s of summary) {
+            if (typeof s?.text === "string") reasoningText = (reasoningText || "") + s.text;
+          }
         }
       } else if (item.type === "function_call") {
         toolCalls.push({
@@ -99,6 +110,20 @@ export const responsesAdapter: ProviderAdapter = {
       content_filter: "content_filter",
     };
 
+    // Derive the terminal reason from real signals. A completed turn that
+    // produced tool calls MUST report `tool_calls`; the raw `status` is
+    // "completed"/"incomplete", which the old map never matched.
+    let finishReason: CanonicalResponse["choices"][0]["finish_reason"];
+    if (toolCalls.length > 0) {
+      finishReason = "tool_calls";
+    } else if (raw.status === "incomplete") {
+      const reason =
+        ((raw.incomplete_details as Record<string, unknown> | undefined)?.reason as string) ?? "";
+      finishReason = finishReasonMap[reason] || "length";
+    } else {
+      finishReason = finishReasonMap[raw.status] || null;
+    }
+
     return {
       id: raw.id || generateId(),
       model: raw.model || "",
@@ -109,8 +134,9 @@ export const responsesAdapter: ProviderAdapter = {
             role: "assistant",
             content: textContent || null,
             tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+            ...(reasoningText ? { reasoning: reasoningText } : {}),
           },
-          finish_reason: finishReasonMap[raw.status] || null,
+          finish_reason: finishReason,
         },
       ],
       usage: raw.usage
@@ -141,6 +167,14 @@ export const responsesAdapter: ProviderAdapter = {
         if (event === "response.output_text.delta") {
           return {
             choices: [{ index: 0, delta: { content: raw.delta as string } }],
+          };
+        }
+        if (
+          event === "response.reasoning_summary_text.delta" ||
+          event === "response.reasoning_text.delta"
+        ) {
+          return {
+            choices: [{ index: 0, delta: { reasoning: raw.delta as string } }],
           };
         }
         if (event === "response.function_call_arguments.delta") {
@@ -181,20 +215,28 @@ export const responsesAdapter: ProviderAdapter = {
         }
         if (event === "response.completed" || event === "response.done") {
           const resp = raw.response as Record<string, unknown> | undefined;
+          // The terminal reason must reflect what actually happened. The
+          // Responses API signals tool intent with status `incomplete` +
+          // `incomplete_details.reason === "tool_calls"` (or a `requires_action`
+          // status). Collapsing every terminal to "stop" made agents believe no
+          // tool was requested, so they re-planned instead of executing.
+          const status = (resp?.status as string) ?? "";
+          const incompleteReason =
+            ((resp?.incomplete_details as Record<string, unknown> | undefined)?.reason as string) ?? "";
+          let finishReason: CanonicalDelta["choices"][0]["finish_reason"];
+          if (status === "requires_action" || incompleteReason === "tool_calls") {
+            finishReason = "tool_calls";
+          } else if (status === "incomplete" && incompleteReason === "max_output_tokens") {
+            finishReason = "length";
+          } else if (status === "failed") {
+            finishReason = "stop";
+          } else {
+            finishReason = status ? "stop" : null;
+          }
           return {
             id: resp?.id as string,
             model: resp?.model as string,
-            choices: [
-              {
-                index: 0,
-                delta: {},
-                finish_reason: resp?.status
-                  ? ((resp.status as string) === "completed"
-                      ? "stop"
-                      : "stop") as CanonicalDelta["choices"][0]["finish_reason"]
-                  : null,
-              },
-            ],
+            choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
             usage: resp?.usage as CanonicalDelta["usage"],
           };
         }

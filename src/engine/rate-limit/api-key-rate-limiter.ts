@@ -28,6 +28,20 @@ interface WaitForApiKeyRateLimitInput {
   rpmLimit?: number | null;
   tpmLimit?: number | null;
   requestedTokens: number;
+  /**
+   * Optional cap on how long the caller is willing to WAIT for capacity. When
+   * the computed wait exceeds this, the reservation returns `null` and the
+   * caller should fail over to another key instead of holding the request for
+   * up to a full window (which previously stalled requests for tens of seconds
+   * before the first byte). Omit for the legacy (uncapped) behaviour.
+   */
+  maxWaitMs?: number | null;
+}
+
+/** Default pre-dispatch wait cap. Overridable via env. */
+export function maxPreDispatchWaitMs(): number {
+  const raw = Number(process.env.ROUTER_MAX_PRE_DISPATCH_WAIT_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1500;
 }
 
 const windowStateByKey = new Map<string, KeyWindowState>();
@@ -98,8 +112,9 @@ async function reserveWithinWindow(
   apiKeyId: string,
   rpmLimit: number | null,
   tpmLimit: number | null,
-  requestedTokens: number
-): Promise<ApiKeyRateLimitReservation> {
+  requestedTokens: number,
+  maxWaitMs: number | null
+): Promise<ApiKeyRateLimitReservation | null> {
   const normalizedRequestedTokens = Math.max(1, Math.floor(requestedTokens));
 
   while (true) {
@@ -109,6 +124,11 @@ async function reserveWithinWindow(
     const waitRpmMs = getRpmWaitMs(state, now, rpmLimit);
     const waitTpmMs = getTpmWaitMs(state, now, tpmLimit, normalizedRequestedTokens);
     const waitMs = Math.max(waitRpmMs, waitTpmMs);
+
+    // Too long to wait — hand back to the caller so it can fail over.
+    if (waitMs > 0 && maxWaitMs != null && waitMs > maxWaitMs) {
+      return null;
+    }
 
     if (waitMs <= 0) {
       const reservationId = crypto.randomUUID();
@@ -141,9 +161,10 @@ async function reserveWithinWindow(
 
 export async function waitForApiKeyRateLimit(
   input: WaitForApiKeyRateLimitInput
-): Promise<ApiKeyRateLimitReservation> {
+): Promise<ApiKeyRateLimitReservation | null> {
   const rpmLimit = input.rpmLimit ?? null;
   const tpmLimit = input.tpmLimit ?? null;
+  const maxWaitMs = input.maxWaitMs ?? null;
   const hasRateLimits = Boolean((rpmLimit && rpmLimit > 0) || (tpmLimit && tpmLimit > 0));
 
   if (!hasRateLimits) {
@@ -168,8 +189,8 @@ export async function waitForApiKeyRateLimit(
 
   const state = getKeyState(input.apiKeyId);
   const task = state.tail.then(
-    () => reserveWithinWindow(state, input.apiKeyId, rpmLimit, tpmLimit, input.requestedTokens),
-    () => reserveWithinWindow(state, input.apiKeyId, rpmLimit, tpmLimit, input.requestedTokens)
+    () => reserveWithinWindow(state, input.apiKeyId, rpmLimit, tpmLimit, input.requestedTokens, maxWaitMs),
+    () => reserveWithinWindow(state, input.apiKeyId, rpmLimit, tpmLimit, input.requestedTokens, maxWaitMs)
   );
 
   state.tail = task.then(() => undefined, () => undefined);

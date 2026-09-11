@@ -28,7 +28,10 @@ async function main(): Promise<void> {
   console.log("\n— Reservation release (no over-throttling) —\n");
 
   // 1) No-limit key stays at 0 even after a reservation is released.
-  const noLimitRes = await waitForApiKeyRateLimit({ apiKeyId: keyId, requestedTokens: 100 });
+  // (`waitForApiKeyRateLimit` now returns `| null` when capacity can't be
+  // granted in time; in this test there is no contention, so a reservation
+  // is always expected — non-null assertions are safe.)
+  const noLimitRes = (await waitForApiKeyRateLimit({ apiKeyId: keyId, requestedTokens: 100 }))!;
   assert(noLimitRes.reservationId.length > 0, "no-limit key still returns a reservation id");
   await releaseApiKeyRateLimit(noLimitRes);
   const afterNoLimit = getKeyRateSnapshot(keyId);
@@ -38,11 +41,11 @@ async function main(): Promise<void> {
 
   // 2) RPM-limited key: reserving increments RPM; releasing decrements back.
   const limitedKey = `release-test-rpm-${Date.now()}`;
-  const resRpm = await waitForApiKeyRateLimit({
+  const resRpm = (await waitForApiKeyRateLimit({
     apiKeyId: limitedKey,
     rpmLimit: 15,
     requestedTokens: 100,
-  });
+  }))!;
   let snap = getKeyRateSnapshot(limitedKey);
   assert(snap!.rpmCurrent === 1, "rpm-limited key: reserve increments RPM to 1");
 
@@ -54,12 +57,12 @@ async function main(): Promise<void> {
 
   // 3) Successful requests are NOT released — they stay counted.
   const successKey = `release-test-success-${Date.now()}`;
-  const resSuccess = await waitForApiKeyRateLimit({
+  const resSuccess = (await waitForApiKeyRateLimit({
     apiKeyId: successKey,
     rpmLimit: 15,
     tpmLimit: 5000,
     requestedTokens: 100,
-  });
+  }))!;
   await settleApiKeyRateLimit(resSuccess, 123); // actual usage 123 tokens
   snap = getKeyRateSnapshot(successKey);
   assert(snap!.rpmCurrent === 1, "successful request stays counted (RPM 1)");
@@ -68,11 +71,11 @@ async function main(): Promise<void> {
 
   // 4) TPM release: a failed request that reserved tokens releases them.
   const tpmKey = `release-test-tpm-${Date.now()}`;
-  const resTpm = await waitForApiKeyRateLimit({
+  const resTpm = (await waitForApiKeyRateLimit({
     apiKeyId: tpmKey,
     tpmLimit: 5000,
     requestedTokens: 500,
-  });
+  }))!;
   snap = getKeyRateSnapshot(tpmKey);
   assert(snap!.tpmCurrent === 500, "tpm-limited key: reserve counts estimated tokens");
   await releaseApiKeyRateLimit(resTpm);

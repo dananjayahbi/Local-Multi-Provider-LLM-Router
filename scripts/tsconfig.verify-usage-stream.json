@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": false,
+    "esModuleInterop": true,
+    "module": "commonjs",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": false,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "outDir": "e:\\My_GitHub_Repos\\Local-Multi-Provider-LLM-Router\\.tmp-verify-usage",
+    "rootDir": "e:\\My_GitHub_Repos\\Local-Multi-Provider-LLM-Router\\src",
+    "types": [
+      "node"
+    ],
+    "emitDeclarationOnly": false
+  },
+  "include": [
+    "e:\\My_GitHub_Repos\\Local-Multi-Provider-LLM-Router\\src\\engine\\serializer.ts",
+    "e:\\My_GitHub_Repos\\Local-Multi-Provider-LLM-Router\\src\\engine\\canonical.ts",
+    "e:\\My_GitHub_Repos\\Local-Multi-Provider-LLM-Router\\src\\engine\\response-normalizer.ts"
+  ],
+  "exclude": []
+}

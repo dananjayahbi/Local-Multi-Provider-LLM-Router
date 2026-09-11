@@ -26,17 +26,29 @@ export const chatCompletionsAdapter: ProviderAdapter = {
       messages.push({ role: "system", content: canonical.system });
     }
     for (const msg of canonical.messages) {
-      const entry: Record<string, unknown> = {
-        role: msg.role,
-        content:
-          typeof msg.content === "string"
-            ? msg.content
-            : Array.isArray(msg.content)
+      // Preserve multimodal content: an all-text array is flattened to a plain
+      // string (the common case), but a request that carries `image_url` parts
+      // is forwarded as a parts array — dropping images silently broke vision
+      // requests for every client.
+      const content =
+        typeof msg.content === "string"
+          ? msg.content
+          : Array.isArray(msg.content)
+            ? msg.content.every((c) => c.type === "text")
               ? msg.content
                   .filter((c): c is TextContent => c.type === "text")
                   .map((c) => c.text)
                   .join("")
-              : msg.content,
+              : msg.content.map((c) =>
+                  c.type === "image_url"
+                    ? { type: "image_url", image_url: c.image_url }
+                    : { type: "text", text: c.text }
+                )
+            : msg.content;
+
+      const entry: Record<string, unknown> = {
+        role: msg.role,
+        content,
       };
       if (msg.name) entry.name = msg.name;
       if (msg.tool_call_id) entry.tool_call_id = msg.tool_call_id;

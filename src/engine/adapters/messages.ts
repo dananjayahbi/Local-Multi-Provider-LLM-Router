@@ -12,6 +12,16 @@ function generateId(): string {
   return "msg-" + crypto.randomUUID();
 }
 
+/** Parse a tool-call arguments JSON string into an object, tolerating bad JSON. */
+function safeJsonParse(value: string | undefined): unknown {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
 export const messagesAdapter: ProviderAdapter = {
   buildRequest(canonical: CanonicalRequest, apiKey: string, baseUrl: string, modelId: string) {
     const url = `${baseUrl.replace(/\/+$/, "")}/messages`;
@@ -39,13 +49,16 @@ export const messagesAdapter: ProviderAdapter = {
       body.system = systemMessages.join("\n");
     }
 
-    // Map messages
-    const messages = nonSystemMessages.map((msg) => {
-      const entry: Record<string, unknown> = { role: msg.role };
+    // Map messages. Anthropic uses typed content blocks and — critically — a
+    // `tool` result must be expressed as a `tool_result` block INSIDE a `user`
+    // turn. Dropping the assistant's `tool_calls` (tool_use) or emitting a bare
+    // `role:"tool"` message detaches the result from its call, and the model
+    // re-issues the same tool forever. See docs/10-...-plan.md (D4).
+    const messages: Record<string, unknown>[] = [];
+    for (const msg of nonSystemMessages) {
       const parts = contentToParts(msg.content);
 
-      // Anthropic expects content as an array of content blocks
-      const contentBlocks = parts.map((part) => {
+      const contentBlocks: Array<Record<string, unknown>> = parts.map((part) => {
         if (part.type === "text") {
           return { type: "text", text: part.text };
         }
@@ -61,10 +74,36 @@ export const messagesAdapter: ProviderAdapter = {
         return { type: "text", text: "" };
       });
 
-      entry.content = contentBlocks;
-      if (msg.tool_call_id) entry.tool_call_id = msg.tool_call_id;
-      return entry;
-    });
+      // `tool` role → a `user` turn carrying a `tool_result` block.
+      if (msg.role === "tool") {
+        messages.push({
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: msg.tool_call_id ?? "",
+              content: contentBlocks,
+            },
+          ],
+        });
+        continue;
+      }
+
+      // Assistant turn that requested tools → append `tool_use` blocks so the
+      // following `tool_result` has a matching anchor.
+      if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          contentBlocks.push({
+            type: "tool_use",
+            id: tc.id,
+            name: tc.function.name,
+            input: safeJsonParse(tc.function.arguments),
+          } as (typeof contentBlocks)[number]);
+        }
+      }
+
+      messages.push({ role: msg.role, content: contentBlocks });
+    }
 
     body.messages = messages;
 
@@ -98,11 +137,16 @@ export const messagesAdapter: ProviderAdapter = {
 
     // Build message from content blocks
     let textContent: string | null = null;
+    let reasoning: string | null = null;
     const toolCalls: CanonicalResponse["choices"][0]["message"]["tool_calls"] = [];
 
     for (const block of content) {
       if (block.type === "text") {
         textContent = (textContent || "") + block.text;
+      } else if (block.type === "thinking") {
+        // Anthropic-native extended thinking — preserve as reasoning so it is
+        // never silently dropped before reaching the client.
+        reasoning = (reasoning || "") + (block.thinking || block.text || "");
       } else if (block.type === "tool_use") {
         toolCalls.push({
           id: block.id || "",
@@ -132,6 +176,7 @@ export const messagesAdapter: ProviderAdapter = {
             role: "assistant",
             content: textContent,
             tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+            ...(reasoning ? { reasoning } : {}),
           },
           finish_reason: finishReasonMap[raw.stop_reason] || null,
         },
@@ -179,6 +224,13 @@ export const messagesAdapter: ProviderAdapter = {
         if (delta.type === "text_delta") {
           return {
             choices: [{ index: 0, delta: { content: delta.text as string } }],
+          };
+        }
+        if (delta.type === "thinking_delta") {
+          // Preserve Anthropic-native thinking as reasoning (normally not
+          // bridged for Copilot; bridged into content for universal clients).
+          return {
+            choices: [{ index: 0, delta: { reasoning: (delta.thinking as string) ?? "" } }],
           };
         }
         if (delta.type === "input_json_delta") {

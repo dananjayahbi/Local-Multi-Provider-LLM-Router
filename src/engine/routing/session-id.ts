@@ -193,7 +193,8 @@ function isCopilotMetaUserText(text: string): boolean {
  * sessions will hash to the same id (the "all sessions share one key" bug).
  */
 function firstUserText(
-  messages?: SessionRequestLike["messages"]
+  messages?: SessionRequestLike["messages"],
+  stripCopilotMeta: boolean = true
 ): string {
   const msgs = Array.isArray(messages) ? messages : null;
   if (!msgs?.length) return "";
@@ -207,7 +208,7 @@ function firstUserText(
     if (NON_ANCHOR_ROLES.has(role)) continue;
     const raw = messageText(m).trim();
     if (raw.length === 0) continue;
-    if (isCopilotMetaUserText(raw)) {
+    if (stripCopilotMeta && isCopilotMetaUserText(raw)) {
       // Strip the shared meta blocks; the remaining text is the real prompt.
       const stripped = stripCopilotMetaBlocks(raw).trim();
       if (stripped.length > 0) return stripped;
@@ -226,9 +227,10 @@ function firstUserText(
  * not drift as the conversation grows or tools are attached.
  */
 function contentFingerprint(
-  messages?: SessionRequestLike["messages"]
+  messages?: SessionRequestLike["messages"],
+  stripCopilotMeta: boolean = true
 ): string | null {
-  const text = firstUserText(messages);
+  const text = firstUserText(messages, stripCopilotMeta);
   if (text.length === 0) return null;
 
   // Anchor on the first user text only. Do NOT include msgs.length or tools —
@@ -329,7 +331,15 @@ function dumpSignals(req: SessionRequestLike): void {
  * Returns null when there is no reliable per-conversation signal; callers
  * treat null as a shared "default" session (legacy single-session fallback).
  */
-export function resolveSessionId(req: SessionRequestLike): string | null {
+export function resolveSessionId(
+  req: SessionRequestLike,
+  opts: { stripCopilotMeta?: boolean } = {}
+): string | null {
+  // Copilot meta-tag stripping assumes the client injects Copilot's shared
+  // `<environment_info>`/`<attachments>` blocks. A generic client that
+  // legitimately sends such tags would have its anchor mangled, risking session
+  // collisions — so universal callers pass `stripCopilotMeta: false`.
+  const stripCopilotMeta = opts.stripCopilotMeta !== false;
   if (debugEnabled()) {
     dumpSignals(req);
   }
@@ -364,7 +374,7 @@ export function resolveSessionId(req: SessionRequestLike): string | null {
   //    Must NOT include message count, tool presence, or Copilot's shared
   //    <environment_info> / <attachments> meta blocks — only the genuine user
   //    task text, so different conversations stay distinct.
-  const fp = contentFingerprint(req.messages);
+  const fp = contentFingerprint(req.messages, stripCopilotMeta);
   if (fp) {
     if (debugEnabled()) {
       console.error(

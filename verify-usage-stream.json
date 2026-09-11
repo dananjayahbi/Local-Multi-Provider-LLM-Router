@@ -1,0 +1,37 @@
+{
+  "passed": 6,
+  "failed": 0,
+  "total": 6,
+  "results": [
+    {
+      "name": "usage-only chunk serialized",
+      "ok": true,
+      "detail": "data: {\"id\":\"chatcmpl-abc\",\"object\":\"chat.completion.chunk\",\"created\":1789067540,\"model\":\"pool-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":1193,\"completion_tokens\":47,\"total_tokens\":1240}}\n\n"
+    },
+    {
+      "name": "usage-only chunk carries empty choices[]",
+      "ok": true,
+      "detail": "data: {\"id\":\"chatcmpl-abc\",\"object\":\"chat.completion.chunk\",\"created\":1789067540,\"model\":\"pool-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":1193,\"completion_tokens\":47,\"total_tokens\":1240}}\n\n"
+    },
+    {
+      "name": "bare heartbeat dropped",
+      "ok": true,
+      "detail": "got: \"\""
+    },
+    {
+      "name": "content delta no usage field",
+      "ok": true,
+      "detail": "data: {\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":1789067540,\"model\":\"\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"
+    },
+    {
+      "name": "content+usage delta carries usage",
+      "ok": true,
+      "detail": "data: {\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":1789067540,\"model\":\"\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n"
+    },
+    {
+      "name": "choices-undefined + usage serialized",
+      "ok": true,
+      "detail": "data: {\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":1789067540,\"model\":\"\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n"
+    }
+  ]
+}
