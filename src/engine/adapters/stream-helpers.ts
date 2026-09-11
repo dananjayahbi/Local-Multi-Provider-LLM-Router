@@ -14,7 +14,12 @@
 // ("no response returned").
 //
 // These helpers therefore: (1) normalize reasoning so Copilot sees a STRING in
-// a field it reads, and (2) never bridge reasoning into `content`.
+// a field it reads, and (2) bridge reasoning into `content` ONLY when the
+// resolved client capabilities ask for it (`bridgeReasoningToContent`). Generic
+// OpenAI-compatible agents (Zoo Code, Cline, ...) ignore the `reasoning*` fields,
+// so for them a reasoning-only turn MUST also appear in `content` or the turn
+// looks EMPTY and the agent re-plans in a loop. Copilot keeps its collapsible
+// Thinking UI untouched because the default profile never bridges.
 
 import { CanonicalDelta } from "../canonical";
 
@@ -55,4 +60,53 @@ export function isBareDelta(delta: CanonicalDelta): boolean {
     if (typeof raw.reasoning_content === "string" && raw.reasoning_content.length > 0) return false;
     return true;
   });
+}
+
+/**
+ * Mirror reasoning into `content` for clients that ignore the `reasoning*`
+ * fields (`bridge` flag). The reasoning fields are KEPT so a dual-capable client
+ * still renders its Thinking UI. Only a reasoning-only delta is bridged — a
+ * delta that already carries real `content` is left untouched so we never
+ * duplicate or reorder the answer text.
+ *
+ * When `bridge` is false this is a strict no-op, so the Copilot path is
+ * byte-for-byte unchanged.
+ */
+export function bridgeReasoningToContent(delta: CanonicalDelta, bridge: boolean): CanonicalDelta {
+  if (!bridge) return delta;
+  const choices = delta.choices.map((choice) => {
+    const d = choice.delta ?? {};
+    const raw = d as Record<string, unknown>;
+    const hasContent = typeof d.content === "string" && d.content.length > 0;
+    if (hasContent) return choice;
+    const reasoning =
+      (typeof raw.reasoning_content === "string" && raw.reasoning_content) ||
+      (typeof raw.reasoning === "string" && raw.reasoning) ||
+      "";
+    if (!reasoning) return choice;
+    return { ...choice, delta: { ...(d as object), content: reasoning } };
+  });
+  return { ...delta, choices };
+}
+
+/** Finish reasons that indicate the model requested one or more tool calls. */
+export function deltaHasToolCalls(delta: CanonicalDelta): boolean {
+  return delta.choices.some((c) => {
+    const d = c.delta ?? {};
+    return Array.isArray(d.tool_calls) && d.tool_calls.length > 0;
+  });
+}
+
+/**
+ * Resolve the terminal `finish_reason`: if the turn actually produced tool
+ * calls, it MUST be reported as `tool_calls` — otherwise an agent never
+ * executes the tool and instead re-plans (a loop). Terminal intent from the
+ * upstream is otherwise preserved.
+ */
+export function resolveFinishReason(
+  sawToolCalls: boolean,
+  upstream: CanonicalDelta["choices"][0]["finish_reason"] | undefined
+): CanonicalDelta["choices"][0]["finish_reason"] {
+  if (sawToolCalls) return "tool_calls";
+  return upstream ?? "stop";
 }

@@ -15,6 +15,7 @@ import { CanonicalRequest, CanonicalDelta } from "@/engine/canonical";
 import { orchestrate, ResolvedPool } from "@/engine/orchestrator";
 import { serializeResponse, serializeDelta, serializeStreamEnd } from "@/engine/serializer";
 import { getAdapter } from "@/engine/adapters";
+import { deltaHasToolCalls, resolveFinishReason } from "@/engine/adapters/stream-helpers";
 import { classifyError } from "@/engine/error-classifier";
 import { applyFailure, resetKeyHealth } from "@/engine/health-engine";
 import { createRequestLog } from "@/engine/data-access/request-logs";
@@ -32,7 +33,16 @@ import { buildInjection, InjectionInput, LimitName } from "@/engine/playground";
 import {
   buildExhaustedPoolResponse,
   buildExhaustedPoolStream,
+  exhaustedMessageFor,
 } from "@/engine/routing/exhausted-pool";
+import {
+  resolveClientCapabilities,
+  ClientCapabilities,
+} from "@/engine/clients/client-profile";
+import { fireAndForget } from "@/lib/async";
+import { getAppSettingsCached } from "@/lib/settings-cache";
+import { buildKeepaliveChunk, KEEPALIVE_INTERVAL_MS } from "@/engine/streaming/keepalive";
+import { withDispatcher } from "@/engine/routing/dispatcher";
 
 export async function POST(request: NextRequest) {
   // Auth check
@@ -59,9 +69,18 @@ export async function POST(request: NextRequest) {
 
   const requestedModel = (rawBody.model as string) || "";
 
+  // Resolve client capabilities early (fidelity behaviour only — never affects
+  // routing/auth). Defaults to the Copilot profile, so existing behavior is
+  // byte-for-byte unchanged unless a client/operator opts into `universal`.
+  const caps: ClientCapabilities = resolveClientCapabilities(request.headers);
+
   // ─── Per-Pool Key Auth (Task 01) ─────────────────────
   // A pool owns a plaintext gateway key; authenticating with it grants
   // access to just that pool. Fall back to the legacy unified key.
+  //
+  // The full pool is loaded ONCE below; we load only the gateway key here and
+  // cache appSettings in-process. Previously this did three sequential Prisma
+  // round-trips before any provider contact — a needless TTFT cost.
   const authPool = await prisma.pool.findUnique({
     where: { virtualModelName: requestedModel },
     select: { gatewayKey: true },
@@ -71,7 +90,7 @@ export async function POST(request: NextRequest) {
   if (authPool?.gatewayKey && authPool.gatewayKey === token) {
     authed = true;
   } else {
-    const settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
+    const settings = await getAppSettingsCached();
     if (settings && verifyGatewayKey(token, settings.unifiedGatewayKeyHash)) {
       authed = true;
     }
@@ -139,11 +158,16 @@ export async function POST(request: NextRequest) {
     // Derive a stable session id so this Copilot/VSCode session is pinned to
     // its own key. Used for per-session locking in the orchestrator. Null is
     // normalized to undefined so legacy single-session routing is preserved.
-    const sessionId = resolveSessionId({
-      headers: request.headers,
-      body: rawBody,
-      messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
-    }) ?? undefined;
+    const sessionId = resolveSessionId(
+      {
+        headers: request.headers,
+        body: rawBody,
+        messages: (rawBody.messages as CanonicalRequest["messages"]) || [],
+      },
+      // Only strip Copilot's injected meta-tags for Copilot. A generic client
+      // that legitimately sends those tags must keep its full anchor text.
+      { stripCopilotMeta: caps.profile === "copilot" }
+    ) ?? undefined;
 
     // ── Copilot injection (Task 06-07) ─────────────────
     // If a previous request for this pool rotated keys due to a limit,
@@ -151,7 +175,10 @@ export async function POST(request: NextRequest) {
     // to switch directly or compact the chat (context is now uncached).
     const pendingInjection = takePendingInjection(pool.id, sessionId);
     let messages = (rawBody.messages as CanonicalRequest["messages"]) || [];
-    if (pendingInjection) {
+    // The guidance tells the model to call `askQuestion` — a Copilot-only tool.
+    // Injecting it for a generic client makes the agent hallucinate a tool it
+    // does not have, so gate it on capability AND make it idempotent.
+    if (pendingInjection && caps.supportsAskQuestionInjection) {
       const guidance = buildInjection("compact_first", {
         keyLabel: pendingInjection.keyLabel,
         limitName: pendingInjection.limitName as LimitName,
@@ -159,10 +186,15 @@ export async function POST(request: NextRequest) {
         promptTokens: pendingInjection.promptTokens,
         lastPromptTokens: pendingInjection.lastPromptTokens,
       } satisfies InjectionInput);
-      messages = [
-        { role: "system", content: guidance },
-        ...messages,
-      ];
+      const alreadyInjected = messages.some(
+        (m) => typeof m.content === "string" && m.content.includes("[ROUTER-GUIDANCE]")
+      );
+      if (!alreadyInjected) {
+        messages = [
+          { role: "system", content: guidance },
+          ...messages,
+        ];
+      }
     }
 
     // Build canonical request
@@ -223,15 +255,16 @@ export async function POST(request: NextRequest) {
       })),
     };
 
-    const result = await orchestrate(canonicalRequest, resolvedPool, { sessionId });
+    const result = await orchestrate(canonicalRequest, resolvedPool, { sessionId, capabilities: caps });
 
     // ─── Exhausted pool: no healthy key remained ────────
     // Do NOT return a hard error. Return a valid assistant completion so the
     // agent sees a final, tool-call-free message and ends its turn (session.idle)
     // instead of retrying forever. Honors the request's streaming preference.
     if (result.exhaustedPool) {
+      const exhaustedMessage = exhaustedMessageFor(caps.emitOutageMarker);
       if (rawBody.stream) {
-        const stream = buildExhaustedPoolStream(requestedModel);
+        const stream = buildExhaustedPoolStream(requestedModel, exhaustedMessage);
         const encoder = new TextEncoder();
         const body = new ReadableStream({
           async start(controller) {
@@ -258,7 +291,7 @@ export async function POST(request: NextRequest) {
           },
         });
       }
-      return NextResponse.json(serializeResponse(buildExhaustedPoolResponse(requestedModel)));
+      return NextResponse.json(serializeResponse(buildExhaustedPoolResponse(requestedModel, exhaustedMessage), caps));
     }
 
     if (!result.success) {
@@ -282,21 +315,41 @@ export async function POST(request: NextRequest) {
     // Streaming
     if (rawBody.stream && result.streamGenerator) {
       const encoder = new TextEncoder();
-      // Terminal chunk guaranteeing a valid choices array is always emitted.
-      const terminalChunk = serializeDelta({
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      });
+      // Terminal chunk is emitted lazily in the finally block since its reason
+      // depends on whether tool calls were actually produced during the stream.
 
       const stream = new ReadableStream({
         async start(controller) {
           let hasTerminal = false;
+          let sawToolCalls = false;
+          let emittedAny = false;
+          // Early keepalive: write ONE no-op frame immediately so a cold
+          // upstream (model warm-up) does not look like a stalled socket to
+          // agent clients, then repeat until real content arrives. Gated on the
+          // universal capability so Copilot's stream is unchanged.
+          const keepaliveChunk = caps.sendEarlyKeepalive ? buildKeepaliveChunk() : "";
+          let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+          if (keepaliveChunk) {
+            try {
+              controller.enqueue(encoder.encode(keepaliveChunk));
+              keepaliveTimer = setInterval(() => {
+                if (emittedAny) return;
+                try { controller.enqueue(encoder.encode(keepaliveChunk)); } catch {}
+              }, KEEPALIVE_INTERVAL_MS);
+            } catch {}
+          }
           try {
             for await (const delta of result.streamGenerator!) {
-              const chunk = serializeDelta(delta);
+              const chunk = serializeDelta(delta, caps);
               if (chunk) {
+                emittedAny = true;
+                if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
                 controller.enqueue(encoder.encode(chunk));
                 if (delta.choices?.some((c) => c.finish_reason != null)) {
                   hasTerminal = true;
+                }
+                if (deltaHasToolCalls(delta)) {
+                  sawToolCalls = true;
                 }
               }
             }
@@ -305,11 +358,18 @@ export async function POST(request: NextRequest) {
             // mid-generation, we still emit a synthetic terminal chunk below.
             console.error("[gateway:stream] mid-stream error, injecting terminal chunk:", err);
           } finally {
+            if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
             // Guarantee the client always receives a terminal finish_reason
-            // chunk + [DONE], so it never sees a stream with no choices.
+            // chunk + [DONE], so it never sees a stream with no choices. Use a
+            // tool-aware reason so an agent that received a tool call sees
+            // `tool_calls` and executes it instead of re-planning.
             try {
-              if (!hasTerminal && terminalChunk) {
-                controller.enqueue(encoder.encode(terminalChunk));
+              if (!hasTerminal) {
+                const reason = resolveFinishReason(sawToolCalls, undefined);
+                const terminalChunk = serializeDelta({
+                  choices: [{ index: 0, delta: {}, finish_reason: reason }],
+                }, caps);
+                if (terminalChunk) controller.enqueue(encoder.encode(terminalChunk));
               }
               controller.enqueue(encoder.encode(serializeStreamEnd()));
             } catch {}
@@ -329,7 +389,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Non-streaming
-    return NextResponse.json(serializeResponse(result.canonicalResponse!));
+    return NextResponse.json(serializeResponse(result.canonicalResponse!, caps));
   }
 
   // ─── Direct-addressing mode: providerName/modelId ──────
@@ -403,7 +463,8 @@ export async function POST(request: NextRequest) {
 
     const adapter = getAdapter(provider.apiFormat);
 
-    // Per-key rate limit wait
+    // Per-key rate limit wait (capped so a single key never stalls the request
+    // for a full window; surface a clear 429 instead of a silent long hold).
     const estimatedTokens = estimateTokensForRateLimit(canonicalRequest);
     let reservation = await waitForApiKeyRateLimit({
       apiKeyId: apiKey.id,
@@ -411,6 +472,18 @@ export async function POST(request: NextRequest) {
       tpmLimit: apiKey.tpmLimit as number | null,
       requestedTokens: estimatedTokens,
     });
+
+    if (!reservation) {
+      return NextResponse.json(
+        {
+          error: {
+            message: "Rate limit capacity unavailable for this key; retry shortly.",
+            type: "rate_limited",
+          },
+        },
+        { status: 429 }
+      );
+    }
 
     try {
       const { url, headers, body } = adapter.buildRequest(
@@ -420,12 +493,12 @@ export async function POST(request: NextRequest) {
         modelId
       );
 
-      const response = await fetch(url, {
+      const response = await fetch(url, withDispatcher({
         method: "POST",
         headers,
         body,
         signal: AbortSignal.timeout(300_000),
-      });
+      }));
 
       const latencyMs = Date.now() - startTime;
 
@@ -459,7 +532,9 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      await resetKeyHealth(apiKey.id);
+      // Health reset is bookkeeping — do not make the client wait on a SQLite
+      // write before the first byte.
+      fireAndForget(resetKeyHealth(apiKey.id), "directResetKeyHealth");
 
       // Streaming
       if (rawBody.stream) {
@@ -470,18 +545,33 @@ export async function POST(request: NextRequest) {
         const decoder = new TextDecoder();
         let buffer = "";
 
-        const terminalChunk = serializeDelta({
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-        });
         const stream = new ReadableStream({
           async start(controller) {
             let hasTerminal = false;
+            let sawToolCalls = false;
+            let emittedAny = false;
+            const keepaliveChunk = caps.sendEarlyKeepalive ? buildKeepaliveChunk() : "";
+            let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+            if (keepaliveChunk) {
+              try {
+                controller.enqueue(encoder.encode(keepaliveChunk));
+                keepaliveTimer = setInterval(() => {
+                  if (emittedAny) return;
+                  try { controller.enqueue(encoder.encode(keepaliveChunk)); } catch {}
+                }, KEEPALIVE_INTERVAL_MS);
+              } catch {}
+            }
             const emitDelta = (delta: CanonicalDelta) => {
-              const chunk = serializeDelta(delta);
+              const chunk = serializeDelta(delta, caps);
               if (chunk) {
+                emittedAny = true;
+                if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
                 controller.enqueue(encoder.encode(chunk));
                 if (delta.choices?.some((c) => c.finish_reason != null)) {
                   hasTerminal = true;
+                }
+                if (deltaHasToolCalls(delta)) {
+                  sawToolCalls = true;
                 }
               }
             };
@@ -513,25 +603,35 @@ export async function POST(request: NextRequest) {
             } catch (err) {
               console.error("[gateway:direct-stream] mid-stream error, injecting terminal chunk:", err);
             } finally {
+              if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
               try {
-                if (!hasTerminal && terminalChunk) {
-                  controller.enqueue(encoder.encode(terminalChunk));
+                if (!hasTerminal) {
+                  const reason = resolveFinishReason(sawToolCalls, undefined);
+                  const terminalChunk = serializeDelta({
+                    choices: [{ index: 0, delta: {}, finish_reason: reason }],
+                  }, caps);
+                  if (terminalChunk) controller.enqueue(encoder.encode(terminalChunk));
                 }
                 controller.enqueue(encoder.encode(serializeStreamEnd()));
               } catch {}
-              try { settleApiKeyRateLimit(reservation, null).catch(() => {}); } catch {}
+              try { settleApiKeyRateLimit(reservation!, null).catch(() => {}); } catch {}
               try { controller.close(); } catch {}
             }
           },
         });
 
-        await createRequestLog({
-          apiKeyId: apiKey.id,
-          providerModelId: providerModel.id,
-          outcome: "SUCCESS",
-          latencyMs,
-          requestedVirtualModel: requestedModel,
-        });
+        // Defer the log write so returning the stream response never waits on a
+        // SQLite insert.
+        fireAndForget(
+          createRequestLog({
+            apiKeyId: apiKey.id,
+            providerModelId: providerModel.id,
+            outcome: "SUCCESS",
+            latencyMs,
+            requestedVirtualModel: requestedModel,
+          }),
+          "directStreamLog"
+        );
 
         return new Response(stream, {
           status: response.status,
@@ -560,7 +660,7 @@ export async function POST(request: NextRequest) {
         requestedVirtualModel: requestedModel,
       });
 
-      return NextResponse.json(serializeResponse(canonicalResponse));
+      return NextResponse.json(serializeResponse(canonicalResponse, caps));
     } catch (err) {
       const latencyMs = Date.now() - startTime;
       const message = err instanceof Error ? err.message : String(err);

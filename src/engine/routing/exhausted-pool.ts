@@ -17,6 +17,15 @@
 
 import { CanonicalResponse, CanonicalDelta } from "../canonical";
 
+/**
+ * Machine-detectable marker prefixed to the exhausted message for universal
+ * (non-Copilot) clients so an agent / wrapper can distinguish a routing OUTAGE
+ * from a genuine "task complete" answer and back off instead of treating it as
+ * a final result. Copilot keeps the plain message (it relies on the mechanical
+ * tool-loop termination and must not see extra text).
+ */
+export const EXHAUSTED_POOL_MARKER = "[ROUTER-OUTAGE]";
+
 /** Predefined message surfaced to the agent when every key in a pool is exhausted. */
 export const EXHAUSTED_POOL_MESSAGE = [
   "This is an output message from the gateway:",
@@ -24,6 +33,13 @@ export const EXHAUSTED_POOL_MESSAGE = [
   "Please wait until a penalty is removed from a key, then you may continue.",
   "You can check the gateway dashboard (Pools & Logs tabs) for more information.",
 ].join("\n\n");
+
+/** The exhausted message as surfaced to a given client (marker for universal). */
+export function exhaustedMessageFor(emitOutageMarker: boolean): string {
+  return emitOutageMarker
+    ? `${EXHAUSTED_POOL_MARKER} ${EXHAUSTED_POOL_MESSAGE}`
+    : EXHAUSTED_POOL_MESSAGE;
+}
 
 /** Machine-readable classification written to RequestLog for this case. */
 export const NO_HEALTHY_KEY_CLASSIFICATION = "NO_HEALTHY_KEY";
@@ -38,7 +54,10 @@ export function isExhaustedPoolResponse(resp: CanonicalResponse): boolean {
  * Build a complete, non-streamed assistant completion for the exhausted case.
  * `finish_reason: "stop"` + no tool_calls => the agent ends its turn.
  */
-export function buildExhaustedPoolResponse(model: string): CanonicalResponse {
+export function buildExhaustedPoolResponse(
+  model: string,
+  message: string = EXHAUSTED_POOL_MESSAGE
+): CanonicalResponse {
   return {
     id: `exhausted-${Date.now()}`,
     model,
@@ -48,7 +67,7 @@ export function buildExhaustedPoolResponse(model: string): CanonicalResponse {
         index: 0,
         message: {
           role: "assistant",
-          content: EXHAUSTED_POOL_MESSAGE,
+          content: message,
         },
         finish_reason: "stop",
       },
@@ -62,12 +81,15 @@ export function buildExhaustedPoolResponse(model: string): CanonicalResponse {
  * message in one delta, then a terminal `finish_reason: "stop"` chunk so the
  * client still sees a well-formed SSE stream that ends cleanly.
  */
-export async function* buildExhaustedPoolStream(model: string): AsyncGenerator<CanonicalDelta> {
+export async function* buildExhaustedPoolStream(
+  model: string,
+  message: string = EXHAUSTED_POOL_MESSAGE
+): AsyncGenerator<CanonicalDelta> {
   const id = `exhausted-${Date.now()}`;
   yield {
     id,
     model,
-    choices: [{ index: 0, delta: { role: "assistant", content: EXHAUSTED_POOL_MESSAGE } }],
+    choices: [{ index: 0, delta: { role: "assistant", content: message } }],
   };
   yield {
     id,

@@ -12,6 +12,7 @@
 import { classifyError, ErrorClassification } from "../error-classifier";
 import { getAdapter } from "../adapters";
 import { isRetriable, backoffAfterFailure, MAX_ATTEMPTS } from "./retry-backoff";
+import { withDispatcher } from "./dispatcher";
 
 export interface UpstreamAttempt {
   ok: boolean;
@@ -39,12 +40,12 @@ export async function sendKeyAttempt(
 ): Promise<UpstreamAttempt> {
   const start = Date.now();
   try {
-    const response = await fetch(req.url, {
+    const response = await fetch(req.url, withDispatcher({
       method: "POST",
       headers: req.headers,
       body: req.body,
       signal: AbortSignal.timeout(300_000), // 5 min timeout
-    });
+    }));
     const latencyMs = Date.now() - start;
 
     if (!response.ok) {

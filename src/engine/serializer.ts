@@ -4,8 +4,13 @@
 
 import { CanonicalResponse, CanonicalDelta } from "./canonical";
 import { normalizeCanonicalResponse } from "./response-normalizer";
+import { defaultCapabilities, ClientCapabilities } from "./clients/client-profile";
+import { bridgeReasoningToContent } from "./adapters/stream-helpers";
 
-export function serializeResponse(canonical: CanonicalResponse): object {
+export function serializeResponse(
+  canonical: CanonicalResponse,
+  caps: ClientCapabilities = defaultCapabilities()
+): object {
   const normalized = normalizeCanonicalResponse(canonical);
   return {
     id: normalized.id,
@@ -16,7 +21,14 @@ export function serializeResponse(canonical: CanonicalResponse): object {
       index: choice.index,
       message: {
         role: choice.message.role,
-        content: choice.message.content,
+        // For clients that ignore `reasoning*`, mirror a reasoning-only turn
+        // into `content` so the turn never renders empty.
+        content:
+          caps.bridgeReasoningToContent &&
+          !choice.message.content &&
+          (choice.message.reasoning_content || choice.message.reasoning)
+            ? choice.message.reasoning_content || choice.message.reasoning
+            : choice.message.content,
         ...(choice.message.tool_calls && choice.message.tool_calls.length > 0
           ? { tool_calls: choice.message.tool_calls }
           : {}),
@@ -36,7 +48,10 @@ export function serializeResponse(canonical: CanonicalResponse): object {
   };
 }
 
-export function serializeDelta(delta: CanonicalDelta): string {
+export function serializeDelta(
+  delta: CanonicalDelta,
+  caps: ClientCapabilities = defaultCapabilities()
+): string {
   // Skip deltas that carry nothing usable — pure heartbeats (no choices AND
   // no usage). A usage-only terminal chunk (empty choices[] + populated usage
   // object) MUST be forwarded so Copilot's Context Window indicator receives
@@ -48,12 +63,16 @@ export function serializeDelta(delta: CanonicalDelta): string {
     return "";
   }
 
+  // Mirror reasoning into `content` for clients that ignore `reasoning*`
+  // (universal profile). No-op for Copilot, so its Thinking UI is unchanged.
+  const bridged = bridgeReasoningToContent(delta, caps.bridgeReasoningToContent);
+
   const payload: Record<string, unknown> = {
-    id: delta.id || "",
+    id: bridged.id || "",
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
-    model: delta.model || "",
-    choices: (delta.choices || []).map((c) => ({
+    model: bridged.model || "",
+    choices: (bridged.choices || []).map((c) => ({
       index: c.index,
       delta: c.delta ?? {}, // some providers omit delta — ensure {} so JSON.stringify never drops it
       finish_reason: c.finish_reason ?? null,
